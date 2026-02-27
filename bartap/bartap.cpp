@@ -80,6 +80,17 @@ int send_if_condition(uint8_t *res) {
     return 7;
 }
 
+//command 58 (read operations conditions register), returns type of response recieved
+int read_ocr(uint8_t *res) {
+    //R3 response format, R1 + four bytes
+    //check for illegal command (response format will be R1 only)
+    if(sd_command(CMD58, CMD58_ARG, CMD58_CRC, res, 5) == 0) {
+        return 1;
+    }
+    //command recognized, response will be R3
+    return 3;
+}
+
 void sd_init(uint8_t *res) {
     uint8_t idle[1] = {
         0xFF
@@ -109,7 +120,28 @@ void _print_R1(uint8_t *res) {
 }
 
 void _print_R3(uint8_t *res) {
-
+    printf("Card Power Up Status: ");
+    if(POWER_UP_STATUS(res[1])) {
+        printf("READY\n CCS Status: ");
+        if(CCS_VAL(res[1])) {
+            printf("%d\n", 1);
+        } else {
+            printf("%d\n", 0);
+        }
+    } else {
+        printf("BUSY\n");
+    }
+    printf("VDD Window: ");
+    if(VDD_2728(res[3])) printf("2.7-2.8, ");
+    if(VDD_2829(res[2])) printf("2.8-2.9, ");
+    if(VDD_2930(res[2])) printf("2.9-3.0, ");
+    if(VDD_3031(res[2])) printf("3.0-3.1, ");
+    if(VDD_3132(res[2])) printf("3.1-3.2, ");
+    if(VDD_3233(res[2])) printf("3.2-3.3, ");
+    if(VDD_3334(res[2])) printf("3.3-3.4, ");
+    if(VDD_3435(res[2])) printf("3.4-3.5, ");
+    if(VDD_3536(res[2])) printf("3.5-3.6");
+    printf("\n");
 }
 
 void _print_R7(uint8_t *res) {
@@ -181,6 +213,8 @@ int main()
     print_response(res);
     //interface conditions
     print_response(res, send_if_condition(res));
+    //operations conditions register
+    print_response(res, read_ocr(res)); //TODO: should throw error if voltage used not supported and exit initializaion sequence (unusable card)
 
     while (true) {
 
