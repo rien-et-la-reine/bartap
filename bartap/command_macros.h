@@ -13,6 +13,15 @@
 #define CMD58_ARG    0x00000000
 #define CMD58_CRC    0x00
 
+//command 55
+#define CMD55       55
+#define CMD55_ARG   0x00000000
+#define CMD55_CRC   0x00
+
+//app command 41
+#define ACMD41      41
+#define ACMD41_ARG  0x40000000  //indicates High Capacity cards are supported (HCS bit is 1)
+#define ACMD41_CRC  0x00
 
 //response 1
 #define PARAM_ERROR(X)      X & 0b01000000

@@ -31,7 +31,7 @@ void CS_DISABLE() {
     spi_write_blocking(SPI_PORT, idle, 1);
 }
 
-int sd_command(uint8_t cmd, uint32_t arg, uint8_t crc, uint8_t *res, size_t len) {
+int sd_command(uint8_t cmd, uint32_t arg, uint8_t crc, uint8_t *res, size_t len = 1) {
     CS_ENABLE();
     uint8_t cmdbuf[6] = {
         cmd|0x40,
@@ -65,7 +65,7 @@ int sd_command(uint8_t cmd, uint32_t arg, uint8_t crc, uint8_t *res, size_t len)
 //command 0 (go to idle state), returns type of response recieved
 int go_idle_state(uint8_t *res) {
     //R1 response format, single byte
-    sd_command(CMD0, CMD0_ARG, CMD0_CRC, res, 1);
+    sd_command(CMD0, CMD0_ARG, CMD0_CRC, res);
     return 1;
 }
 
@@ -89,6 +89,34 @@ int read_ocr(uint8_t *res) {
     }
     //command recognized, response will be R3
     return 3;
+}
+//command 55
+int app_cmd(uint8_t *res) {
+    //R1 response format, single byte
+    sd_command(CMD55, CMD55_ARG, CMD55_CRC, res);
+    //check R1 for errors
+    if(res[0] > 1) {
+        if(PARAM_ERROR(res[0])) {printf("Parameter Error\n");}
+        if(ADDR_ERROR(res[0])) {printf("Address Error\n");}
+        if(ERASE_SEQ_ERROR(res[0])) {printf("Erase Sequence Error\n");}
+        if(CRC_ERROR(res[0])) {printf("CRC Error\n");}
+        if(ILLEGAL_CMD(res[0])) {printf("Illegal Command\n");}
+        if(ERASE_RESET(res[0])) {printf("Erase Reset Error\n");}
+        return 0;
+    }
+    return 1;
+}
+
+//app command 41
+int send_op_condition(uint8_t *res) {
+    //app command, send command 55 first
+    if(app_cmd(res) == 0) {
+        //something went wrong
+        return 0;
+    }
+    //R1 response format, single byte
+    sd_command(ACMD41, ACMD41_ARG, ACMD41_CRC, res);
+    return 1;
 }
 
 void sd_init(uint8_t *res) {
@@ -122,7 +150,7 @@ void _print_R1(uint8_t *res) {
 void _print_R3(uint8_t *res) {
     printf("Card Power Up Status: ");
     if(POWER_UP_STATUS(res[1])) {
-        printf("READY\n CCS Status: ");
+        printf("READY\nCCS Status: ");
         if(CCS_VAL(res[1])) {
             printf("%d\n", 1);
         } else {
@@ -170,6 +198,8 @@ void _print_R7(uint8_t *res) {
 void print_response(uint8_t *res, int res_type = 1) {
     switch (res_type)
     {
+    case 0:
+        printf("Command 55 (app command) Error: \n");
     case 1:
         printf("Recieved R1 Response: %x :\n", res[0]);
         _print_R1(res);
@@ -215,6 +245,13 @@ int main()
     print_response(res, send_if_condition(res));
     //operations conditions register
     print_response(res, read_ocr(res)); //TODO: should throw error if voltage used not supported and exit initializaion sequence (unusable card)
+    //send operating condition
+    print_response(res, send_op_condition(res));
+    while(IN_IDLE(res[0])) {
+        print_response(res, send_op_condition(res));
+    }
+    //resissue operations conditions register command to get the now valid CCS bit
+    print_response(res, read_ocr(res));
 
     while (true) {
 
