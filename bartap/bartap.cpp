@@ -139,7 +139,7 @@ void sd_boot(uint8_t *res) {
     go_idle_state(res);
 }
 
-int _print_R1(uint8_t *res) {
+int _process_R1(uint8_t *res) {
 //    if(res[0] & 0b10000000) {printf("Error: MSB = 1\n");            }
     if(res[0] == 0) {
 //        printf("Card Ready\n");
@@ -161,7 +161,7 @@ int _print_R1(uint8_t *res) {
     return SD_ERROR;
 }
 
-int _print_R3(uint8_t *res) {
+int _process_R3(uint8_t *res) {
 /*  
     printf("VDD Window: ");
     if(VDD_2728(res[3])) printf("2.7-2.8, ");
@@ -191,7 +191,7 @@ int _print_R3(uint8_t *res) {
     }
 }
 
-int _print_R7(uint8_t *res) {
+int _process_R7(uint8_t *res) {
     if (res[4] != ECHO) {
         //echo mismatch
 //        printf("Echo: %x\n", res[4]);
@@ -221,7 +221,7 @@ int _print_R7(uint8_t *res) {
     return SD_ERROR;
 }
 
-int print_response(uint8_t *res, int res_type = 1) {
+int process_response(uint8_t *res, int res_type = 1) {
     int R1_status;
     switch (res_type)
     {
@@ -229,27 +229,27 @@ int print_response(uint8_t *res, int res_type = 1) {
 //        printf("Command 55 (app command) Error: \n");
     case 1:
 //        printf("Recieved R1 Response: %x :\n", res[0]);
-        return _print_R1(res);
+        return _process_R1(res);
     case 3:
 //        printf("Recieved R3 Response: %x, %x, %x, %x, %x:\n", res[0], res[1], res[2], res[3], res[4]);
 //        printf("R1 response:\n");
-        R1_status = _print_R1(res);
+        R1_status = _process_R1(res);
         if (R1_status <= 0) {
             //error
             return R1_status;
         }
 //        printf("rest of R3 response:\n");
-        return _print_R3(res);
+        return _process_R3(res);
     case 7:
 //        printf("Recieved R7 Response: %x, %x, %x, %x, %x:\n", res[0], res[1], res[2], res[3], res[4]);
 //        printf("R1 response:\n");
-        R1_status = _print_R1(res);
+        R1_status = _process_R1(res);
         if (R1_status <= 0) {
             //error
             return R1_status;
         }
 //        printf("rest of R7 response:\n");
-        return _print_R7(res);
+        return _process_R7(res);
     }
     return SD_ERROR;
 }
@@ -266,23 +266,23 @@ int sd_init(uint8_t *res) {
     bool ready_status = false;
     //startup sequence for SD card into idle state (command 0)
     sd_boot(res);
-    if (print_response(res) <= 0) {
+    if (process_response(res) <= 0) {
         //failed power on
         printf("failed SD Card power on. double check connection\n");
         return 1;
     }
 
     //interface conditions (command 8)
-    switch (print_response(res, send_if_condition(res))) {
+    switch (process_response(res, send_if_condition(res))) {
         case ILL_CMD_ER:
-            printf("version 1.x card\n");
+//            printf("version 1.x card\n");
             version_2 = false;
             break;
         case ECHO_MISMATCH:
             printf("echo mismatch, unusable card.\n");
             return 1;
         case VOLTAGE_SUPPORTED:
-            printf("version 2.00 or later card\n");
+//            printf("version 2.00 or later card\n");
             break;
         default:
             printf("non-compatible voltage range, unusable card.\n");
@@ -290,7 +290,7 @@ int sd_init(uint8_t *res) {
     }
 
     //operations conditions register (command 58)
-    switch (print_response(res, read_ocr(res))) {
+    switch (process_response(res, read_ocr(res))) {
         case ILL_CMD_ER:
             printf("not SD Memory Card, unsupported.\n");
             return 1;
@@ -308,7 +308,7 @@ int sd_init(uint8_t *res) {
     //send operating condition (app command 41)
     add_alarm_in_ms(1000, init_timeout_callback, NULL, false);
     do {
-        switch (print_response(res, send_op_condition(res))) {
+        switch (process_response(res, send_op_condition(res))) {
             case IDLE_STATE:
                 break;
             case SD_READY:
@@ -328,7 +328,7 @@ int sd_init(uint8_t *res) {
     }
 
     //resissue operations conditions register command to get the now valid CCS bit
-    switch (print_response(res, read_ocr(res))) {
+    switch (process_response(res, read_ocr(res))) {
         case ILL_CMD_ER:
             printf("not SD Memory Card, unsupported.\n");
             return 1;
