@@ -1,3 +1,14 @@
+#define ILL_CMD_ER           0
+#define MSB_ERROR           -1
+#define SD_ERROR            -2
+#define ECHO_MISMATCH       -3
+#define TIMEOUT             -4
+
+#define IDLE_STATE           1
+#define SD_READY             2
+#define VOLTAGE_SUPPORTED    3
+#define SD_HIGH_CAPACITY     4
+
 //command 0
 #define CMD0        0
 #define CMD0_ARG    0x00000000
@@ -6,6 +17,7 @@
 //command 8
 #define CMD8        8
 #define CMD8_ARG    0x0000001AA
+#define ECHO        0xAA //last byte or CMD8_ARG
 #define CMD8_CRC    0x86 //(1000011 << 1)
 
 //command 58

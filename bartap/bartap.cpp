@@ -90,19 +90,23 @@ int read_ocr(uint8_t *res) {
     //command recognized, response will be R3
     return 3;
 }
+
 //command 55
 int app_cmd(uint8_t *res) {
     //R1 response format, single byte
     sd_command(CMD55, CMD55_ARG, CMD55_CRC, res);
     //check R1 for errors
     if(res[0] > 1) {
-        if(PARAM_ERROR(res[0])) {printf("Parameter Error\n");}
-        if(ADDR_ERROR(res[0])) {printf("Address Error\n");}
-        if(ERASE_SEQ_ERROR(res[0])) {printf("Erase Sequence Error\n");}
-        if(CRC_ERROR(res[0])) {printf("CRC Error\n");}
-        if(ILLEGAL_CMD(res[0])) {printf("Illegal Command\n");}
-        if(ERASE_RESET(res[0])) {printf("Erase Reset Error\n");}
-        return 0;
+//        if(PARAM_ERROR(res[0])) {printf("Parameter Error\n");}
+//        if(ADDR_ERROR(res[0])) {printf("Address Error\n");}
+//        if(ERASE_SEQ_ERROR(res[0])) {printf("Erase Sequence Error\n");}
+//        if(CRC_ERROR(res[0])) {printf("CRC Error\n");}
+        if(ILLEGAL_CMD(res[0])) {
+//            printf("Illegal Command\n");
+            return ILL_CMD_ER;
+        }
+//        if(ERASE_RESET(res[0])) {printf("Erase Reset Error\n");}
+        return SD_ERROR;
     }
     return 1;
 }
@@ -119,7 +123,7 @@ int send_op_condition(uint8_t *res) {
     return 1;
 }
 
-void sd_init(uint8_t *res) {
+void sd_boot(uint8_t *res) {
     uint8_t idle[1] = {
         0xFF
     };
@@ -135,30 +139,30 @@ void sd_init(uint8_t *res) {
     go_idle_state(res);
 }
 
-void _print_R1(uint8_t *res) {
-    if(res[0] & 0b10000000) {printf("Error: MSB = 1\n"); return;}
-    if(res[0] == 0) {printf("Card Ready\n"); return;}
-    if(PARAM_ERROR(res[0])) {printf("Parameter Error\n");}
-    if(ADDR_ERROR(res[0])) {printf("Address Error\n");}
-    if(ERASE_SEQ_ERROR(res[0])) {printf("Erase Sequence Error\n");}
-    if(CRC_ERROR(res[0])) {printf("CRC Error\n");}
-    if(ILLEGAL_CMD(res[0])) {printf("Illegal Command\n");}
-    if(ERASE_RESET(res[0])) {printf("Erase Reset Error\n");}
-    if(IN_IDLE(res[0])) {printf("In Idle State\n");}
+int _print_R1(uint8_t *res) {
+//    if(res[0] & 0b10000000) {printf("Error: MSB = 1\n");            }
+    if(res[0] == 0) {
+//        printf("Card Ready\n");
+        return SD_READY;
+    }
+//    if(PARAM_ERROR(res[0])) {printf("Parameter Error\n");           }
+//    if(ADDR_ERROR(res[0])) {printf("Address Error\n");              }
+//    if(ERASE_SEQ_ERROR(res[0])) {printf("Erase Sequence Error\n");  }
+//    if(CRC_ERROR(res[0])) {printf("CRC Error\n");                   }
+    if(ILLEGAL_CMD(res[0])) {
+//        printf("Illegal Command\n");
+        return ILL_CMD_ER;
+    }
+//    if(ERASE_RESET(res[0])) {printf("Erase Reset Error\n");         }
+    if(IN_IDLE(res[0])) {
+//        printf("In Idle State\n");
+        return IDLE_STATE;
+    }
+    return SD_ERROR;
 }
 
-void _print_R3(uint8_t *res) {
-    printf("Card Power Up Status: ");
-    if(POWER_UP_STATUS(res[1])) {
-        printf("READY\nCCS Status: ");
-        if(CCS_VAL(res[1])) {
-            printf("%d\n", 1);
-        } else {
-            printf("%d\n", 0);
-        }
-    } else {
-        printf("BUSY\n");
-    }
+int _print_R3(uint8_t *res) {
+/*  
     printf("VDD Window: ");
     if(VDD_2728(res[3])) printf("2.7-2.8, ");
     if(VDD_2829(res[2])) printf("2.8-2.9, ");
@@ -169,60 +173,181 @@ void _print_R3(uint8_t *res) {
     if(VDD_3334(res[2])) printf("3.3-3.4, ");
     if(VDD_3435(res[2])) printf("3.4-3.5, ");
     if(VDD_3536(res[2])) printf("3.5-3.6");
-    printf("\n");
+*/
+//    printf("\n");
+//    printf("Card Power Up Status: ");
+    if(POWER_UP_STATUS(res[1])) {
+//        printf("READY\nCCS Status: ");
+        if(CCS_VAL(res[1])) {
+//            printf("%d\n", 1);
+            return SD_HIGH_CAPACITY;
+        } else {
+//            printf("%d\n", 0);
+            return SD_READY;
+        }
+    } else {
+//        printf("BUSY\n");
+        return IDLE_STATE;
+    }
 }
 
-void _print_R7(uint8_t *res) {
-    printf("Command Version: %x \n", CMD_VER(res[1]));
-    printf("Voltage Accepted: %x :", res[3]);
+int _print_R7(uint8_t *res) {
+    if (res[4] != ECHO) {
+        //echo mismatch
+//        printf("Echo: %x\n", res[4]);
+//        printf("echo mismatch\n");
+        return ECHO_MISMATCH;
+    }
+//    printf("Command Version: %x \n", CMD_VER(res[1]));
+//    printf("Echo: %x\n", res[4]);
+//    printf("Voltage Accepted: %x :", res[3]);
     switch (VOL_ACC(res[3])) {
         case VOLTAGE_ACC_27_33:
-            printf("2.7-3.6V\n");
-            break;
+//            printf("2.7-3.6V\n");
+            return VOLTAGE_SUPPORTED;
         case VOLTAGE_ACC_LOW:
-            printf("LOW VOLTAGE\n");
+//            printf("LOW VOLTAGE\n");
             break;
         case VOLTAGE_ACC_RES1:
-            printf("RESERVED\n");
+//            printf("RESERVED\n");
             break;
         case VOLTAGE_ACC_RES2:
-            printf("RESERVED\n");
+//            printf("RESERVED\n");
             break;
         default:
-            printf("NOT DEFINED\n");
+//            printf("NOT DEFINED\n");
             break;
     }
-    printf("Echo: %x\n", res[4]);
+    return SD_ERROR;
 }
 
-void print_response(uint8_t *res, int res_type = 1) {
+int print_response(uint8_t *res, int res_type = 1) {
+    int R1_status;
     switch (res_type)
     {
     case 0:
-        printf("Command 55 (app command) Error: \n");
+//        printf("Command 55 (app command) Error: \n");
     case 1:
-        printf("Recieved R1 Response: %x :\n", res[0]);
-        _print_R1(res);
-        break;
+//        printf("Recieved R1 Response: %x :\n", res[0]);
+        return _print_R1(res);
     case 3:
-        printf("Recieved R3 Response: %x, %x, %x, %x, %x:\n", res[0], res[1], res[2], res[3], res[4]);
-        printf("R1 response:\n");
-        _print_R1(res);
-        printf("rest of R3 response:\n");
-        _print_R3(res);
-        break;
+//        printf("Recieved R3 Response: %x, %x, %x, %x, %x:\n", res[0], res[1], res[2], res[3], res[4]);
+//        printf("R1 response:\n");
+        R1_status = _print_R1(res);
+        if (R1_status <= 0) {
+            //error
+            return R1_status;
+        }
+//        printf("rest of R3 response:\n");
+        return _print_R3(res);
     case 7:
-        printf("Recieved R7 Response: %x, %x, %x, %x, %x:\n", res[0], res[1], res[2], res[3], res[4]);
-        printf("R1 response:\n");
-        _print_R1(res);
-        printf("rest of R7 response:\n");
-        _print_R7(res);
-        break;
+//        printf("Recieved R7 Response: %x, %x, %x, %x, %x:\n", res[0], res[1], res[2], res[3], res[4]);
+//        printf("R1 response:\n");
+        R1_status = _print_R1(res);
+        if (R1_status <= 0) {
+            //error
+            return R1_status;
+        }
+//        printf("rest of R7 response:\n");
+        return _print_R7(res);
     }
+    return SD_ERROR;
 }
 
-int main()
-{
+volatile bool timed_out = false;
+int64_t init_timeout_callback(alarm_id_t id, __unused void *user_data) {
+    timed_out = true;
+    return 0;
+}
+
+int sd_init(uint8_t *res) {
+    bool version_2 = true;
+    bool high_capacity = false;
+    bool ready_status = false;
+    //startup sequence for SD card into idle state (command 0)
+    sd_boot(res);
+    if (print_response(res) <= 0) {
+        //failed power on
+        printf("failed SD Card power on. double check connection\n");
+        return 1;
+    }
+
+    //interface conditions (command 8)
+    switch (print_response(res, send_if_condition(res))) {
+        case ILL_CMD_ER:
+            printf("version 1.x card\n");
+            version_2 = false;
+            break;
+        case ECHO_MISMATCH:
+            printf("echo mismatch, unusable card.\n");
+            return 1;
+        case VOLTAGE_SUPPORTED:
+            printf("version 2.00 or later card\n");
+            break;
+        default:
+            printf("non-compatible voltage range, unusable card.\n");
+            return 1;
+    }
+
+    //operations conditions register (command 58)
+    switch (print_response(res, read_ocr(res))) {
+        case ILL_CMD_ER:
+            printf("not SD Memory Card, unsupported.\n");
+            return 1;
+        case IDLE_STATE:
+            break;
+        case SD_READY:
+            break;
+        case SD_HIGH_CAPACITY:
+            high_capacity = true;
+            break;
+        default:
+            return 1;
+    }
+
+    //send operating condition (app command 41)
+    add_alarm_in_ms(1000, init_timeout_callback, NULL, false);
+    do {
+        switch (print_response(res, send_op_condition(res))) {
+            case IDLE_STATE:
+                break;
+            case SD_READY:
+                ready_status = true;
+                break;
+            case ILL_CMD_ER:
+                printf("not SD Memory Card, unsupported.\n");
+                return 1;
+            default:
+                printf("SD Card Error. R1 Response: %x", res[0]);
+                return 1;
+        }
+    } while(!timed_out && !ready_status);
+    if (timed_out && !ready_status) {
+        printf("initialisation sequence timed out.\n");
+        return 1;
+    }
+
+    //resissue operations conditions register command to get the now valid CCS bit
+    switch (print_response(res, read_ocr(res))) {
+        case ILL_CMD_ER:
+            printf("not SD Memory Card, unsupported.\n");
+            return 1;
+        case IDLE_STATE:
+            break;
+        case SD_READY:
+            break;
+        case SD_HIGH_CAPACITY:
+            high_capacity = true;
+            break;
+        default:
+            return 1;
+    }
+    if(!version_2) { return 0; }
+    if(!high_capacity) { return 2; }
+    return 3;
+}
+
+int main() {
     stdio_init_all();
 
     // SPI initialisation. using SPI at 1MHz.
@@ -238,20 +363,30 @@ int main()
     
     //reponse buffer
     uint8_t res[5];
-    //startup sequence for SD card into idle state
-    sd_init(res);
-    print_response(res);
-    //interface conditions
-    print_response(res, send_if_condition(res));
-    //operations conditions register
-    print_response(res, read_ocr(res)); //TODO: should throw error if voltage used not supported and exit initializaion sequence (unusable card)
-    //send operating condition
-    print_response(res, send_op_condition(res));
-    while(IN_IDLE(res[0])) {
-        print_response(res, send_op_condition(res));
+    //version and capacity flags (may be useful to have idk)
+    bool sd_v2;
+    bool sd_hcxc;
+
+    switch(sd_init(res)) {
+        case 0:
+            sd_v2 = false;
+            sd_hcxc = false;
+            printf("Successfully Initialized V1.X SD Memory Card\n");
+            break;
+        case 2:
+            sd_v2 = true;
+            sd_hcxc = false;
+            printf("Successfully Initialized V2.00+ Standard Capacity SD Memory Card\n");
+            break;
+        case 3:
+            sd_v2 = true;
+            sd_hcxc = true;
+            printf("Successfully Initialized V2.00+ High Capacity SD Memory Card\n");
+            break;
+        default:
+            printf("SD Card Initialiasation Failed\n");
+            return 1;
     }
-    //resissue operations conditions register command to get the now valid CCS bit
-    print_response(res, read_ocr(res));
 
     while (true) {
 
