@@ -37,7 +37,7 @@ void CS_DISABLE() {
     spi_write_blocking(SPI_PORT, idle, 1);
 }
 
-void _sd_command(uint8_t cmd, uint32_t arg, uint8_t crc, uint8_t *res, size_t len = 1) {
+void _sd_command(uint8_t cmd, uint32_t arg, uint8_t crc, uint8_t *res, size_t len = 1, bool disable_cs = true) {
     CS_ENABLE();
     uint8_t cmdbuf[6] = {
         cmd|0x40,
@@ -64,7 +64,7 @@ void _sd_command(uint8_t cmd, uint32_t arg, uint8_t crc, uint8_t *res, size_t le
             res[i] = res_sub[i-1];
         }
     }
-    CS_DISABLE();
+    if (disable_cs) { CS_DISABLE(); }
     return;
 }
 
@@ -87,19 +87,34 @@ void read_ocr(uint8_t *res) {
 }
 
 //command 17 (read single block) timeout 100ms
-void read_single_block(uint32_t addr, uint8_t *buf, uint8_t *token) {
-    uint8_t res1[1], read[1];
-    *token = 0xFF;
-
-    _sd_command(CMD17, addr, CMD17_CRC, res1);
-    if(res1[0] != 0xFF) {
+/*
+ token = 0xFE - Successful read
+ token = 0x0X - Data error
+ token = 0xFF - Timeout
+*/
+void read_single_block(uint8_t *res, uint32_t addr, uint8_t *buf, uint8_t *token) {
+    //CRC buffer, discarded in SPI mode but still needs to be read in
+    uint8_t crc[2];
+    //send read single block command, DO NOT disable chip select afterward
+    _sd_command(CMD17, addr, CMD17_CRC, res, 1, false);
+    //check for R1 response recieved
+    if(res[0] != 0xFF) {
         //wait for response token, timeout 100ms
         timed_out = false;
         add_alarm_in_ms(100, init_timeout_callback, NULL, false);
         do {
+            if (timed_out) { break; }
+            spi_read_blocking(SPI_PORT, 0xFF, token, 1);
+        } while(*token == 0xFF);
 
-        } while(!timed_out);
+        if (*token == 0xFE) {
+            //successful read, read data into buffer
+            spi_read_blocking(SPI_PORT, 0xFF, buf, BLOCK_LEN);
+            spi_read_blocking(SPI_PORT, 0xFF, crc, 2);
+        }
     }
+    //disable chip select at end of read operation
+    CS_DISABLE();
 }
 
 // (write single block) timeout 250ms
@@ -259,8 +274,8 @@ int main() {
     //version and capacity flags (may be useful to have idk)
     bool sd_v2;
     bool sd_hcxc;
-    //read buffer (single sdhc/xc block, 512 bytes)
-    uint8_t buf_single_block[512];
+    //read buffer (single sdhc/xc block, 512 bytes) and token
+    uint8_t buf_single_block[512], token;
 
     switch(sd_init_spi(res)) {
         case 0:
@@ -282,6 +297,19 @@ int main() {
         default:
             printf("SD Card Initialiasation Failed\n");
             return 1;
+    }
+
+
+    //SD read first block
+    read_single_block(res, 0x00000000, buf_single_block, &token);
+    //print out the block
+    if ((res[0] == 0) && (token = 0xFE)) {
+        for (uint16_t i = 0; i < 512; i++) {
+            printf("%x", buf_single_block[i]);
+        }
+        printf("\n");
+    } else {
+        printf("single block read error\n");
     }
 
     while (true) {

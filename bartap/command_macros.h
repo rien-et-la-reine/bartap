@@ -9,6 +9,9 @@
 #define ECHO        0xAA //last byte or CMD8_ARG
 #define CMD8_CRC    0x86 //(1000011 << 1)
 
+//command 16
+#define BLOCK_LEN   512
+
 //command 17
 #define CMD17       17
 #define CMD17_CRC   0x00
