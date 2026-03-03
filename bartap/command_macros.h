@@ -16,6 +16,10 @@
 #define CMD17       17
 #define CMD17_CRC   0x00
 
+//command 24
+#define CMD24       24
+#define CMD24_CRC   0x00
+
 //command 58
 #define CMD58        58
 #define CMD58_ARG    0x00000000
@@ -60,3 +64,9 @@
 #define VOLTAGE_ACC_LOW     0b00000010
 #define VOLTAGE_ACC_RES1    0b00000100
 #define VOLTAGE_ACC_RES2    0b00001000
+
+//data error token
+#define SD_TOKEN_OOR(X)     X & 0b00001000
+#define SD_TOKEN_CECC(X)    X & 0b00000100
+#define SD_TOKEN_CC(X)      X & 0b00000010
+#define SD_TOKEN_ERROR(X)   X & 0b00000001
