@@ -13,6 +13,9 @@
 #define PIN_SCK  14
 #define PIN_MOSI 11
 
+typedef struct {
+    uint8_t block_data[BLOCK_LEN];
+} block_buffer;
 
 volatile bool timed_out;
 int64_t init_timeout_callback(alarm_id_t id, __unused void *user_data) {
@@ -87,6 +90,32 @@ void read_ocr(uint8_t *res) {
     _sd_command(CMD58, CMD58_ARG, CMD58_CRC, res, 5);
 }
 
+//command 12 (stop transmission)
+void _stop_transmission() {
+    alarm_id_t timeout_alarm;
+    uint8_t *res, *token;
+    uint8_t cmdbuf[6] = {
+        12|0x40,
+        0xFF,
+        0xFF,
+        0xFF,
+        0xFF,
+        0|0x01
+    };
+    spi_write_blocking(SPI_PORT, cmdbuf, 6);
+    //get R1 portion of R1b response
+    spi_read_blocking(SPI_PORT, 0xFF, res, 1);
+    //wait for busy part of R1b to end
+    timed_out = false;
+    timeout_alarm = add_alarm_in_ms(250, init_timeout_callback, NULL, false);
+    do {
+        //busy timeout
+        if (timed_out) { break; }
+        spi_read_blocking(SPI_PORT, 0xFF, token, 1);
+    } while(*token == 0x00);
+    cancel_alarm(timeout_alarm);
+}
+
 //command 17 (read single block) timeout 100ms for response token
 /*
  token = 0xFE - Successful read
@@ -121,6 +150,55 @@ void read_single_block(uint8_t *res, uint32_t addr, uint8_t *buf, uint8_t *token
     }
     //disable chip select at end of read operation
     CS_DISABLE();
+}
+
+//command 18 (read multiple block)
+/*
+ token = 0xFE - Successful read
+ token = 0x0X - Data error
+ token = 0xFF - Timeout
+*/
+uint8_t read_multiple_block(uint8_t *res, uint32_t addr, block_buffer *buf, uint8_t *token, uint32_t count) {
+    alarm_id_t timeout_alarm;
+    //reset result buffer and token
+    res[0] = 0xFF;
+    *token = 0xFF;
+    //CRC buffer, discarded in SPI mode but still needs to be read in
+    uint8_t crc[2];
+    //send read single block command, DO NOT disable chip select afterward
+    _sd_command(CMD18, addr, CMD18_CRC, res, 1, false);
+    //check for R1 response recieved
+    if(res[0] != 0xFF) {
+        //wait for response token, timeout 100ms
+        timed_out = false;
+        timeout_alarm = add_alarm_in_ms(100, init_timeout_callback, NULL, false);
+        do {
+            if (timed_out) { break; }
+            spi_read_blocking(SPI_PORT, 0xFF, token, 1);
+        } while(*token == 0xFF);
+        cancel_alarm(timeout_alarm);
+
+        if (*token == 0xFE) {
+            uint32_t i = 0;
+            do {
+                //successful read, read data into buffer
+                spi_read_blocking(SPI_PORT, 0xFF, buf[i++].block_data, BLOCK_LEN);
+                spi_read_blocking(SPI_PORT, 0xFF, crc, 2);
+                //wait for next data block
+                timed_out = false;
+                timeout_alarm = add_alarm_in_ms(100, init_timeout_callback, NULL, false);
+                do {
+                    if (timed_out) { _stop_transmission(); CS_DISABLE(); return 1; }
+                    spi_read_blocking(SPI_PORT, 0xFF, token, 1);
+                } while(*token != 0xFE);
+                cancel_alarm(timeout_alarm);
+            } while (i < count);
+            _stop_transmission();
+        }
+    }
+    //disable chip select at end of read operation
+    CS_DISABLE();
+    return 0;
 }
 
 //command 24 (write block) timeout 250ms after data accepted token
@@ -328,8 +406,9 @@ int main() {
     //version and capacity flags (may be useful to have idk)
     bool sd_v2;
     bool sd_hcxc;
-    //read buffer (single sdhc/xc block, 512 bytes) and token
-    uint8_t buf_single_block[512], token;
+    //read buffer (5 blocks) and token
+    block_buffer read_write_buffer[5];
+    uint8_t token;
 
     switch(sd_init_spi(res)) {
         case 0:
@@ -356,11 +435,11 @@ int main() {
 
     //SD read block 100
     printf("reading block\n");
-    read_single_block(res, 0x00000100, buf_single_block, &token);
+    read_single_block(res, 0x00000100, read_write_buffer[0].block_data, &token);
     //print out the block
     if ((res[0] == 0) && (token == 0xFE)) {
         for (uint16_t i = 0; i < 512; i++) {
-            printf("%x", buf_single_block[i]);
+            printf("%x", read_write_buffer[0].block_data[i]);
         }
         printf("\n");
     } else {
@@ -370,28 +449,23 @@ int main() {
         if(SD_TOKEN_ERROR(token))   { printf("single block read error\n")       ;}
     }
 
-    //SD write to block 100
-    printf("writing block\n");
-    //write zeroes
-    for (uint16_t i = 0; i < 512; i++) {
-        buf_single_block[i] = 0;
-    }
-    printf("\n");
-    //write buffer to address 100
-    write_block(res, 0x00000100, buf_single_block, &token);
-    if ((res[0] != 0)) {
-        if(PARAM_ERROR(res[0]))     { printf("parameter error\n")       ;}
-        if(ADDR_ERROR(res[0]))      { printf("address error\n")         ;}
-        if(ERASE_SEQ_ERROR(res[0])) { printf("erase sequence error\n")  ;}
-        if(CRC_ERROR(res[0]))       { printf("crc error\n")             ;}
-        if(ILLEGAL_CMD(res[0]))     { printf("illegal command\n")       ;}
-        if(ERASE_RESET(res[0]))     { printf("erase reset error\n")     ;}
-        if(IN_IDLE(res[0]))         { printf("in idle state\n")         ;}
-        return 1;
-    }
-    if (token != 0x05) {
-        if (token == 0x00) { printf("busy timeout\n")   ;}
-        if (token == 0xFF) { printf("no response\n")    ;}
+    //SD read first 5 blocks
+    printf("reading first 3 blocks\n");
+    if (read_multiple_block(res, 0x00000000, read_write_buffer, &token, 5) == 0) {
+        //sucessful multiblock read
+        for (uint8_t j = 0; j < 5; j++) {
+            printf("block %d\n", j);
+            for (uint16_t i = 0; i < 512; i++) {
+                printf("%x", read_write_buffer[j].block_data[i]);
+            }
+            printf("\n");
+        }
+    } else {
+        //timed out
+        if(SD_TOKEN_OOR(token))     { printf("block address out of range\n")    ;}
+        if(SD_TOKEN_CECC(token))    { printf("card ECC failure\n")              ;}
+        if(SD_TOKEN_CC(token))      { printf("CC error\n")                      ;}
+        if(SD_TOKEN_ERROR(token))   { printf("single block read error\n")       ;}
     }
 
     while (true) {

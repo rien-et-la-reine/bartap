@@ -16,6 +16,10 @@
 #define CMD17       17
 #define CMD17_CRC   0x00
 
+//command 18
+#define CMD18       18
+#define CMD18_CRC   0x00
+
 //command 24
 #define CMD24       24
 #define CMD24_CRC   0x00
