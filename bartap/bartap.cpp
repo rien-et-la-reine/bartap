@@ -372,9 +372,9 @@ int main() {
 
     //SD write to block 100
     printf("writing block\n");
-    //decrement each byte in the buffer and print it
+    //write zeroes
     for (uint16_t i = 0; i < 512; i++) {
-        printf("%x", --buf_single_block[i]);
+        buf_single_block[i] = 0;
     }
     printf("\n");
     //write buffer to address 100
@@ -394,35 +394,6 @@ int main() {
         if (token == 0xFF) { printf("no response\n")    ;}
     }
 
-
-    //SD read block 100 again to see difference
-    printf("reading block\n");
-    read_single_block(res, 0x00000100, buf_single_block, &token);
-    printf("token: %x\n", token);
-    printf("R1: %x\n", res[0]);
-    //print out the block
-    if ((res[0] == 0) && (token == 0xFE)) {
-        for (uint16_t i = 0; i < 512; i++) {
-            printf("%x", buf_single_block[i]);
-        }
-        printf("\n");
-    } else {
-        if(SD_TOKEN_OOR(token))     { printf("block address out of range\n")    ;}
-        if(SD_TOKEN_CECC(token))    { printf("card ECC failure\n")              ;}
-        if(SD_TOKEN_CC(token))      { printf("CC error\n")                      ;}
-        if(SD_TOKEN_ERROR(token))   { printf("single block read error\n")       ;}
-    }
-    if ((res[0] != 0)) {
-        if(PARAM_ERROR(res[0]))     { printf("parameter error\n")       ;}
-        if(ADDR_ERROR(res[0]))      { printf("address error\n")         ;}
-        if(ERASE_SEQ_ERROR(res[0])) { printf("erase sequence error\n")  ;}
-        if(CRC_ERROR(res[0]))       { printf("crc error\n")             ;}
-        if(ILLEGAL_CMD(res[0]))     { printf("illegal command\n")       ;}
-        if(ERASE_RESET(res[0]))     { printf("erase reset error\n")     ;}
-        if(IN_IDLE(res[0]))         { printf("in idle state\n")         ;}
-        return 1;
-    }
-    printf("end\n");
     while (true) {
 
     }
