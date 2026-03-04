@@ -152,7 +152,7 @@ void write_block(uint8_t *res, uint32_t addr, uint8_t *buf, uint8_t *token) {
             spi_read_blocking(SPI_PORT, 0xFF, token, 1);
         } while(*token == 0xFF);
         cancel_alarm(timeout_alarm);
-        if (*token & 0x1F == 0x05) {
+        if ((*token & 0x1F) == 0x05) {
             //wait for write to finish, timeout 250ms
             *token = 0x00;
             timed_out = false;
@@ -163,7 +163,7 @@ void write_block(uint8_t *res, uint32_t addr, uint8_t *buf, uint8_t *token) {
                 spi_read_blocking(SPI_PORT, 0xFF, token, 1);
             } while(*token == 0x00);
             cancel_alarm(timeout_alarm);
-            if (*token != 0) {
+            if (!timed_out) {
                 *token = 0x05;
             }
         }
@@ -372,9 +372,9 @@ int main() {
 
     //SD write to block 100
     printf("writing block\n");
-    //increment each byte in the buffer and print it
+    //decrement each byte in the buffer and print it
     for (uint16_t i = 0; i < 512; i++) {
-        printf("%x", ++buf_single_block[i]);
+        printf("%x", --buf_single_block[i]);
     }
     printf("\n");
     //write buffer to address 100
@@ -398,7 +398,6 @@ int main() {
     //SD read block 100 again to see difference
     printf("reading block\n");
     read_single_block(res, 0x00000100, buf_single_block, &token);
-    
     printf("token: %x\n", token);
     printf("R1: %x\n", res[0]);
     //print out the block
