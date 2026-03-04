@@ -13,6 +13,7 @@
 #define PIN_SCK  14
 #define PIN_MOSI 11
 
+
 volatile bool timed_out;
 int64_t init_timeout_callback(alarm_id_t id, __unused void *user_data) {
     timed_out = true;
@@ -93,6 +94,7 @@ void read_ocr(uint8_t *res) {
  token = 0xFF - Timeout
 */
 void read_single_block(uint8_t *res, uint32_t addr, uint8_t *buf, uint8_t *token) {
+    alarm_id_t timeout_alarm;
     //reset result buffer and token
     res[0] = 0xFF;
     *token = 0xFF;
@@ -104,11 +106,12 @@ void read_single_block(uint8_t *res, uint32_t addr, uint8_t *buf, uint8_t *token
     if(res[0] != 0xFF) {
         //wait for response token, timeout 100ms
         timed_out = false;
-        add_alarm_in_ms(100, init_timeout_callback, NULL, false);
+        timeout_alarm = add_alarm_in_ms(100, init_timeout_callback, NULL, false);
         do {
             if (timed_out) { break; }
             spi_read_blocking(SPI_PORT, 0xFF, token, 1);
         } while(*token == 0xFF);
+        cancel_alarm(timeout_alarm);
 
         if (*token == 0xFE) {
             //successful read, read data into buffer
@@ -127,6 +130,7 @@ void read_single_block(uint8_t *res, uint32_t addr, uint8_t *buf, uint8_t *token
  token = 0xFF - Timeout
 */
 void write_block(uint8_t *res, uint32_t addr, uint8_t *buf, uint8_t *token) {
+    alarm_id_t timeout_alarm;
     //reset result buffer and token
     res[0] = 0xFF;
     *token = 0xFE;
@@ -142,22 +146,23 @@ void write_block(uint8_t *res, uint32_t addr, uint8_t *buf, uint8_t *token) {
         //wait for response token, timeout 250ms
         *token = 0xFF;
         timed_out = false;
-        add_alarm_in_ms(250, init_timeout_callback, NULL, false);
+        timeout_alarm = add_alarm_in_ms(250, init_timeout_callback, NULL, false);
         do {
             if (timed_out) { break; }
             spi_read_blocking(SPI_PORT, 0xFF, token, 1);
         } while(*token == 0xFF);
-
+        cancel_alarm(timeout_alarm);
         if (*token & 0x1F == 0x05) {
             //wait for write to finish, timeout 250ms
             *token = 0x00;
             timed_out = false;
-            add_alarm_in_ms(250, init_timeout_callback, NULL, false);
+            timeout_alarm = add_alarm_in_ms(250, init_timeout_callback, NULL, false);
             do {
                 //busy timeout
                 if (timed_out) { break; }
                 spi_read_blocking(SPI_PORT, 0xFF, token, 1);
             } while(*token == 0x00);
+            cancel_alarm(timeout_alarm);
             if (*token != 0) {
                 *token = 0x05;
             }
@@ -218,6 +223,7 @@ version 2.00+ (X) | high capacity (Y)
 and unused 0b01 (since v1.X high capacity cards don't exist) signifies an error
 */
 uint8_t sd_init_spi(uint8_t *res) {
+    alarm_id_t timeout_alarm;
     bool version_2 = true;
     bool high_capacity = false;
     bool ready_status = false;
@@ -257,7 +263,7 @@ uint8_t sd_init_spi(uint8_t *res) {
 
     //send operating condition (app command 41)
     timed_out = false;
-    add_alarm_in_ms(1000, init_timeout_callback, NULL, false);
+    timeout_alarm = add_alarm_in_ms(1000, init_timeout_callback, NULL, false);
     send_op_condition(res);
     if(ILLEGAL_CMD(res[0])) {
         printf("not SD Memory Card, unsupported.\n");
@@ -284,6 +290,7 @@ uint8_t sd_init_spi(uint8_t *res) {
             break;
         }
     }
+    cancel_alarm(timeout_alarm);
 
     //resissue operations conditions register command to get the now valid CCS bit
     read_ocr(res);
@@ -391,6 +398,7 @@ int main() {
     //SD read block 100 again to see difference
     printf("reading block\n");
     read_single_block(res, 0x00000100, buf_single_block, &token);
+    
     printf("token: %x\n", token);
     printf("R1: %x\n", res[0]);
     //print out the block
