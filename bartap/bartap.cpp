@@ -450,7 +450,7 @@ int main() {
     }
 
     //SD read first 5 blocks
-    printf("reading first 3 blocks\n");
+    printf("reading first 5 blocks\n");
     if (read_multiple_block(res, 0x00000000, read_write_buffer, &token, 5) == 0) {
         //sucessful multiblock read
         for (uint8_t j = 0; j < 5; j++) {
