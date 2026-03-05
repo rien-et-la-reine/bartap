@@ -24,6 +24,10 @@
 #define CMD24       24
 #define CMD24_CRC   0x00
 
+//command 25
+#define CMD25       25
+#define CMD25_CRC   0x00
+
 //command 58
 #define CMD58        58
 #define CMD58_ARG    0x00000000
