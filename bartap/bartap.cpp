@@ -561,6 +561,8 @@ int main() {
     printf("writing 5 blocks\n");
     if (write_multiple_block(res, 0x00000100, read_write_buffer, &token, 5) == 5) {
         //sucessful multiblock write
+    } 
+    if (token == 0x05) {
         printf("success\n");
     } else {
         //timed out
