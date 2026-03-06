@@ -9,6 +9,11 @@
 #define ECHO        0xAA //last byte or CMD8_ARG
 #define CMD8_CRC    0x86 //(1000011 << 1)
 
+//command 12
+#define CMD12       12
+#define CMD12_ARG   0x00000000
+#define CMD12_CRC   0x00
+
 //command 16
 #define BLOCK_LEN   512
 
@@ -37,6 +42,11 @@
 #define CMD55       55
 #define CMD55_ARG   0x00000000
 #define CMD55_CRC   0x00
+
+//app command 22
+#define ACMD22      22
+#define ACMD22_ARG  0x00000000
+#define ACMD22_CRC  0x00
 
 //app command 41
 #define ACMD41      41

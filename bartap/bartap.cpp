@@ -41,8 +41,8 @@ void CS_DISABLE() {
     spi_write_blocking(SPI_PORT, idle, 1);
 }
 
-void _sd_command(uint8_t cmd, uint32_t arg, uint8_t crc, uint8_t *res, size_t len = 1, bool disable_cs = true) {
-    CS_ENABLE();
+void _sd_command(uint8_t cmd, uint32_t arg, uint8_t crc, uint8_t *res, size_t len = 1, bool disable_cs = true, bool enable_cs = true) {
+    if (enable_cs) { CS_ENABLE(); }
     uint8_t cmdbuf[6] = {
         cmd|0x40,
         arg >> 24,
@@ -72,6 +72,17 @@ void _sd_command(uint8_t cmd, uint32_t arg, uint8_t crc, uint8_t *res, size_t le
     return;
 }
 
+//command 55
+uint8_t _app_cmd(uint8_t *res) {
+    //R1 response format, single byte
+    _sd_command(CMD55, CMD55_ARG, CMD55_CRC, res);
+    //check R1 for errors
+    if(res[0] > 1) {
+        return 1;
+    }
+    return 0;
+}
+
 //command 0 (go to idle state), returns type of response recieved
 void go_idle_state(uint8_t *res) {
     //R1 response format, single byte
@@ -94,17 +105,7 @@ void read_ocr(uint8_t *res) {
 void _stop_transmission() {
     alarm_id_t timeout_alarm;
     uint8_t *res, *token;
-    uint8_t cmdbuf[6] = {
-        12|0x40,
-        0xFF,
-        0xFF,
-        0xFF,
-        0xFF,
-        0|0x01
-    };
-    spi_write_blocking(SPI_PORT, cmdbuf, 6);
-    //get R1 portion of R1b response
-    spi_read_blocking(SPI_PORT, 0xFF, res, 1);
+    _sd_command(CMD12, CMD12_ARG, CMD12_CRC, res, 1, false, false);
     //wait for busy part of R1b to end
     timed_out = false;
     timeout_alarm = add_alarm_in_ms(250, init_timeout_callback, NULL, false);
@@ -157,15 +158,16 @@ void read_single_block(uint8_t *res, uint32_t addr, uint8_t *buf, uint8_t *token
  token = 0xFE - Successful read
  token = 0x0X - Data error
  token = 0xFF - Timeout
+ returns number of blocks read
 */
-uint8_t read_multiple_block(uint8_t *res, uint32_t addr, block_buffer *buf, uint8_t *token, uint32_t count) {
+uint32_t read_multiple_block(uint8_t *res, uint32_t addr, block_buffer *buf, uint8_t *token, uint32_t count) {
     alarm_id_t timeout_alarm;
     //reset result buffer and token
     res[0] = 0xFF;
     *token = 0xFF;
     //CRC buffer, discarded in SPI mode but still needs to be read in
     uint8_t crc[2];
-    //send read single block command, DO NOT disable chip select afterward
+    //send read multiple block command, DO NOT disable chip select afterward
     _sd_command(CMD18, addr, CMD18_CRC, res, 1, false);
     //check for R1 response recieved
     if(res[0] != 0xFF) {
@@ -178,26 +180,61 @@ uint8_t read_multiple_block(uint8_t *res, uint32_t addr, block_buffer *buf, uint
         } while(*token == 0xFF);
         cancel_alarm(timeout_alarm);
 
-        if (*token == 0xFE) {
-            uint32_t i = 0;
+        uint32_t i = 0;
+        while (i < count) {
+            if (*token != 0xFE) {
+                CS_DISABLE();
+                return i;
+            }
+            //successful read, read data into buffer
+            spi_read_blocking(SPI_PORT, 0xFF, buf[i++].block_data, BLOCK_LEN);
+            spi_read_blocking(SPI_PORT, 0xFF, crc, 2);
+            //wait for next data block
+            timed_out = false;
+            timeout_alarm = add_alarm_in_ms(100, init_timeout_callback, NULL, false);
             do {
-                //successful read, read data into buffer
-                spi_read_blocking(SPI_PORT, 0xFF, buf[i++].block_data, BLOCK_LEN);
-                spi_read_blocking(SPI_PORT, 0xFF, crc, 2);
-                //wait for next data block
-                timed_out = false;
-                timeout_alarm = add_alarm_in_ms(100, init_timeout_callback, NULL, false);
-                do {
-                    if (timed_out) { _stop_transmission(); CS_DISABLE(); return 1; }
-                    spi_read_blocking(SPI_PORT, 0xFF, token, 1);
-                } while(*token != 0xFE);
-                cancel_alarm(timeout_alarm);
-            } while (i < count);
-            _stop_transmission();
+                if (timed_out) { _stop_transmission(); CS_DISABLE(); return i; }
+                spi_read_blocking(SPI_PORT, 0xFF, token, 1);
+            } while(*token != 0xFE);
+            cancel_alarm(timeout_alarm);
         }
+        _stop_transmission();
+    } else {
+        CS_DISABLE();
+        return 0;
     }
     //disable chip select at end of read operation
     CS_DISABLE();
+    return count;
+}
+
+//app command 22 (send_num_wr_blocks)
+uint32_t send_num_wr_blocks(uint8_t *res) {
+    //app command, send command 55 first
+    if(_app_cmd(res) > 0) {
+        //something went wrong, do not issue the ACMD
+        return 0;
+    }
+    uint8_t *token, crc[2], buf[4];
+    //R1 response format, single byte
+    _sd_command(ACMD22, ACMD22_ARG, ACMD22_CRC, res, 1);
+    //wait for response token, timeout 100ms
+    timed_out = false;
+    alarm_id_t timeout_alarm = add_alarm_in_ms(100, init_timeout_callback, NULL, false);
+        do {
+            if (timed_out) { break; }
+            spi_read_blocking(SPI_PORT, 0xFF, token, 1);
+        } while(*token == 0xFF);
+        cancel_alarm(timeout_alarm);
+
+        if (*token == 0xFE) {
+            //successful read, read data into buffer
+            spi_read_blocking(SPI_PORT, 0xFF, buf, 4);
+            spi_read_blocking(SPI_PORT, 0xFF, crc, 2);
+            printf("got blocks\n");
+
+            return (uint32_t) (0x00000000 | buf[3] | (buf[2] << 8) | (buf[1] << 16) | (buf[0] << 24));
+        }
     return 0;
 }
 
@@ -222,7 +259,6 @@ void write_block(uint8_t *res, uint32_t addr, uint8_t *buf, uint8_t *token) {
         spi_write_blocking(SPI_PORT, token, 1);
         spi_write_blocking(SPI_PORT, buf, BLOCK_LEN);
         //wait for response token, timeout 250ms
-        *token = 0xFF;
         timed_out = false;
         timeout_alarm = add_alarm_in_ms(250, init_timeout_callback, NULL, false);
         do {
@@ -232,7 +268,6 @@ void write_block(uint8_t *res, uint32_t addr, uint8_t *buf, uint8_t *token) {
         cancel_alarm(timeout_alarm);
         if ((*token & 0x1F) == 0x05) {
             //wait for write to finish, timeout 250ms
-            *token = 0x00;
             timed_out = false;
             timeout_alarm = add_alarm_in_ms(250, init_timeout_callback, NULL, false);
             do {
@@ -268,15 +303,11 @@ uint32_t write_multiple_block(uint8_t *res, uint32_t addr, block_buffer *buf, ui
     _sd_command(CMD25, addr, CMD25_CRC, res, 1, false);
     //check R1
     if(res[0] == 0) {
-        //no errors, send start token and data to write
-        uint8_t i = 0;
-        do {
-            *token = 0xFC;
+        for (uint32_t i = 0; i < count; i++) {
+            //no errors, send start token and data to write
             spi_write_blocking(SPI_PORT, token, 1);
-            spi_write_blocking(SPI_PORT, buf[i++].block_data, BLOCK_LEN);
-
-            //wait for response token, timeout 250ms
-            *token = 0xFF;
+            spi_write_blocking(SPI_PORT, buf[i].block_data, BLOCK_LEN);
+            //get data response 0bXXX0SSS1 where SSS are status bits
             timed_out = false;
             timeout_alarm = add_alarm_in_ms(250, init_timeout_callback, NULL, false);
             do {
@@ -284,34 +315,32 @@ uint32_t write_multiple_block(uint8_t *res, uint32_t addr, block_buffer *buf, ui
                 spi_read_blocking(SPI_PORT, 0xFF, token, 1);
             } while(*token == 0xFF);
             cancel_alarm(timeout_alarm);
+        
+            if ((*token & 0x1F) == 0x05) { //010 all good
 
-            if ((*token & 0x1F) == 0x05) {
-                //wait for write to finish, timeout 250ms
-                *token = 0x00;
-                timed_out = false;
-                timeout_alarm = add_alarm_in_ms(250, init_timeout_callback, NULL, false);
-                do {
-                    //busy timeout
-                    if (timed_out) { break; }
-                    spi_read_blocking(SPI_PORT, 0xFF, token, 1);
-                } while(*token == 0x00);
-                cancel_alarm(timeout_alarm);
-                if (!timed_out) {
-                    *token = 0x05;
-                }
-            } else {
-                //data error token recieved
+            } else { //110 write error or 101 CRC error (doesn't happen in SPI mode since CRC is not used)
+                //send CMD12 to stop transmission
+                _stop_transmission();
+                //ACMD22 to get number of well written blocks
                 CS_DISABLE();
-                //return result of ACMD22 (send_num_wr_blocks) to get number of well written blocks
-                //TODO: implement ACMD22 and update return statement here
-                return 1;
+                return send_num_wr_blocks(res);
             }
-        } while (i < count);
-        //all data to be written sent, send stop transmission token
+            //wait for busy to end
+            timed_out = false;
+            timeout_alarm = add_alarm_in_ms(250, init_timeout_callback, NULL, false);
+            do {
+                //busy timeout
+                if (timed_out) { return i; }
+                spi_read_blocking(SPI_PORT, 0xFF, token, 1);
+            } while(*token == 0x00);
+            cancel_alarm(timeout_alarm);
+            *token = 0xFC;
+        }
+
+        //send stop transmission
         *token = 0xFD;
         spi_write_blocking(SPI_PORT, token, 1);
-        //wait for card busy
-        *token = 0x00;
+        //wait for busy
         timed_out = false;
         timeout_alarm = add_alarm_in_ms(250, init_timeout_callback, NULL, false);
         do {
@@ -323,21 +352,14 @@ uint32_t write_multiple_block(uint8_t *res, uint32_t addr, block_buffer *buf, ui
         if (!timed_out) {
             *token = 0x05;
         }
+    } else {
+        CS_DISABLE();
+        return 26;
     }
     //disable chip select at end of write operation
     CS_DISABLE();
-    return count;
-}
-
-//command 55
-uint8_t _app_cmd(uint8_t *res) {
-    //R1 response format, single byte
-    _sd_command(CMD55, CMD55_ARG, CMD55_CRC, res);
-    //check R1 for errors
-    if(res[0] > 1) {
-        return 1;
-    }
-    return 0;
+    printf("worked\n");
+    return send_num_wr_blocks(res);
 }
 
 //app command 41
@@ -486,8 +508,13 @@ int main() {
     bool sd_v2;
     bool sd_hcxc;
     //read buffer (5 blocks) and token
-    block_buffer read_write_buffer[5];
+    block_buffer read_write_buffer[1000];
     uint8_t token;
+/*    for (uint8_t j = 0; j < 1000; j++) {
+        for (uint16_t i = 0; i < 512; i++) {
+            read_write_buffer[j].block_data[i] = 0;
+        }
+    } */
 
     switch(sd_init_spi(res)) {
         case 0:
@@ -512,84 +539,17 @@ int main() {
     }
 
 
-    //SD read block 0x100
-    printf("reading block\n");
-    read_single_block(res, 0x00000100, read_write_buffer[0].block_data, &token);
-    //print out the block
-    if ((res[0] == 0) && (token == 0xFE)) {
-        for (uint16_t i = 0; i < 512; i++) {
-            printf("%x", read_write_buffer[0].block_data[i]);
-        }
-        printf("\n");
-    } else {
-        if(SD_TOKEN_OOR(token))     { printf("block address out of range\n")    ;}
-        if(SD_TOKEN_CECC(token))    { printf("card ECC failure\n")              ;}
-        if(SD_TOKEN_CC(token))      { printf("CC error\n")                      ;}
-        if(SD_TOKEN_ERROR(token))   { printf("single block read error\n")       ;}
-    }
 
     //SD read 5 blocks starting with block 0x100
     printf("reading 5 blocks\n");
-    if (read_multiple_block(res, 0x00000100, read_write_buffer, &token, 5) == 0) {
-        //sucessful multiblock read
-        for (uint8_t j = 0; j < 5; j++) {
-            printf("block %d\n", j);
-            for (uint16_t i = 0; i < 512; i++) {
-                printf("%x", read_write_buffer[j].block_data[i]);
-            }
-            printf("\n");
-        }
-    } else {
-        //timed out
-        if(SD_TOKEN_OOR(token))     { printf("block address out of range\n")    ;}
-        if(SD_TOKEN_CECC(token))    { printf("card ECC failure\n")              ;}
-        if(SD_TOKEN_CC(token))      { printf("CC error\n")                      ;}
-        if(SD_TOKEN_ERROR(token))   { printf("block read error\n")              ;}
-    }
+    uint32_t final_address = 0x00ECDFFF;
+    uint32_t blocks_read = read_multiple_block(res, 0x00ECDFFF, read_write_buffer, &token, 5);
+    printf("blocks successfully read: %d\n", blocks_read);
 
-    //set data to be written
-    printf("data to be written\n");
-    for (uint8_t j = 0; j < 5; j++) {
-        printf("block %d\n", j);
-        for (uint16_t i = 0; i < 512; i++) {
-            read_write_buffer[j].block_data[i]++;
-            printf("%x", read_write_buffer[j].block_data[i]);
-        }
-        printf("\n");
-    }
-    //SD write 5 blocks starting with block 0x100
-    printf("writing 5 blocks\n");
-    if (write_multiple_block(res, 0x00000100, read_write_buffer, &token, 5) == 5) {
-        //sucessful multiblock write
-    } 
-    if (token == 0x05) {
-        printf("success\n");
-    } else {
-        //timed out
-        if(SD_TOKEN_OOR(token))     { printf("block address out of range\n")    ;}
-        if(SD_TOKEN_CECC(token))    { printf("card ECC failure\n")              ;}
-        if(SD_TOKEN_CC(token))      { printf("CC error\n")                      ;}
-        if(SD_TOKEN_ERROR(token))   { printf("block read error\n")              ;}
-    }
-
-    //SD read 5 blocks starting with block 0x100
-    printf("reading same 5 blocks\n");
-    if (read_multiple_block(res, 0x00000100, read_write_buffer, &token, 5) == 0) {
-        //sucessful multiblock read
-        for (uint8_t j = 0; j < 5; j++) {
-            printf("block %d\n", j);
-            for (uint16_t i = 0; i < 512; i++) {
-                printf("%x", read_write_buffer[j].block_data[i]);
-            }
-            printf("\n");
-        }
-    } else {
-        //timed out
-        if(SD_TOKEN_OOR(token))     { printf("block address out of range\n")    ;}
-        if(SD_TOKEN_CECC(token))    { printf("card ECC failure\n")              ;}
-        if(SD_TOKEN_CC(token))      { printf("CC error\n")                      ;}
-        if(SD_TOKEN_ERROR(token))   { printf("block read error\n")              ;}
-    }
+    if(SD_TOKEN_OOR(token))     { printf("block address out of range\n")    ;}
+    if(SD_TOKEN_CECC(token))    { printf("card ECC failure\n")              ;}
+    if(SD_TOKEN_CC(token))      { printf("CC error\n")                      ;}
+    if(SD_TOKEN_ERROR(token))   { printf("block read error\n")              ;}
 
     while (true) {
 
