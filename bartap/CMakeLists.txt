@@ -35,13 +35,13 @@ pico_sdk_init()
 
 # Add executable. Default name is the project name, version 0.1
 
-add_executable(bartap bartap.cpp )
+add_executable(bartap bartap.c )
 
 pico_set_program_name(bartap "bartap")
 pico_set_program_version(bartap "0.1")
 
 # Modify the below lines to enable/disable output over UART/USB
-pico_enable_stdio_uart(bartap 1)
+pico_enable_stdio_uart(bartap 0)
 pico_enable_stdio_usb(bartap 0)
 
 # Add the standard library to the build
@@ -52,11 +52,6 @@ target_link_libraries(bartap
 target_include_directories(bartap PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}
 )
-
-# Add any user requested libraries
-target_link_libraries(bartap 
-        hardware_spi
-        )
 
 pico_add_extra_outputs(bartap)
 
