@@ -9,6 +9,7 @@
 // SPI defines
 // Pins can be changed, see the GPIO function select table in the datasheet for information on GPIO assignments
 #define SPI_PORT spi1
+#define SPI_HW   spi1_hw
 #define PIN_MISO 12
 #define PIN_CS   13
 #define PIN_SCK  14
