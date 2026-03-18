@@ -28,11 +28,15 @@ project(bartap C CXX ASM)
 
 pico_sdk_init()
 
+# Add FatFs
+add_subdirectory(ff16/source)
+
 target_link_libraries(bartap
     pico_stdlib
     hardware_spi
     hardware_pio
     hardware_dma
+    ff16
 )
 
 target_include_directories(bartap PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
