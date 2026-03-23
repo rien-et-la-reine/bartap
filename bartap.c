@@ -30,11 +30,19 @@ static BYTE spi_transfer( BYTE data) {
     return REG(SPI_BASE + SPI_SSPDR_OFFSET);
 }
 
+//wait for card busy TODO: implement timeout parameter
+static void wait_busy() {
+    BYTE status;
+    while((status = spi_transfer(0xFF)) == 0x00);
+}
+
 //send a command to the sd card and return the R1 response
 static BYTE sd_command(BYTE cmd, DWORD arg) {
     uint8_t i = 0;
     //response byte
     BYTE R1;
+    //ensure card is ready
+    wait_busy();
     //send command index
     spi_transfer(cmd|0x40);
     //send argument
@@ -72,7 +80,7 @@ static BYTE sd_single_read(DWORD addr, BYTE *buf) {
     BYTE R1 = sd_command(CMD17, addr);
     if(R1 == 0x00) {
         //proceed
-        while((token = spi_transfer(0xFF)) != 0xFF) {
+        while((token = spi_transfer(0xFF)) == 0xFF) {
             //TODO implement 100ms timeout
         }
         //recieved token
@@ -96,6 +104,44 @@ static BYTE sd_single_read(DWORD addr, BYTE *buf) {
 }
 
 //single block write
+static BYTE sd_single_write(DWORD addr, BYTE *buf) {
+    //token
+    BYTE token = 0xFF;
+
+    //assert chip select
+    spi_transfer(0xFF);
+    CS_ENABLE();
+    spi_transfer(0xFF);
+
+    //ensure no errors in R1 response
+    BYTE R1 = sd_command(CMD24, addr);
+    if(R1 == 0x00) {
+        //proceed
+        //send start token
+        spi_transfer(DATA_START_TOKEN);
+        //send datablock
+        uint16_t i = 0;
+        while(i < 512) { spi_transfer(buf[i++]); }
+
+        //get response token
+        while((token = spi_transfer(0xFF)) == 0xFF) {
+            //TODO: implement 250ms timeout
+        }
+
+        //recieved token
+        if ((token & 0x1F) == 0x05) {
+            //data accepted
+            token = 0x05;
+        }
+    }
+
+    //deassert chip select
+    spi_transfer(0xFF);
+    CS_DISABLE();
+    spi_transfer(0xFF);
+
+    return token;
+}
 
 //multiblock read TODO: use DMA to transfer the data?
 static BYTE sd_multiple_read(DWORD addr, BYTE *buf, uint32_t cnt) {
@@ -112,7 +158,7 @@ static BYTE sd_multiple_read(DWORD addr, BYTE *buf, uint32_t cnt) {
     if(R1 == 0x00) {
         do {
             //proceed
-            while((token = spi_transfer(0xFF)) != 0xFF) {
+            while((token = spi_transfer(0xFF)) == 0xFF) {
                 //TODO implement 100ms timeout
             }
             //recieved token
