@@ -58,6 +58,89 @@ static BYTE sd_command(BYTE cmd, DWORD arg) {
     return R1;
 }
 
+//single block read, returns token
+static BYTE sd_single_read(DWORD addr, BYTE *buf) {
+    //token
+    BYTE token = 0xFF;
+
+    //assert chip select
+    spi_transfer(0xFF);
+    CS_ENABLE();
+    spi_transfer(0xFF);
+
+    //ensure no errors in R1 response
+    BYTE R1 = sd_command(CMD17, addr);
+    if(R1 == 0x00) {
+        //proceed
+        while((token = spi_transfer(0xFF)) != 0xFF) {
+            //TODO implement 100ms timeout
+        }
+        //recieved token
+        if (token == 0xFE) {
+            //read in data into buffer
+            for(uint16_t i = 0; i < 512; i++) {
+                *buf++ = spi_transfer(0xFF);
+            }
+            //read in crc
+            spi_transfer(0xFF);
+            spi_transfer(0xFF);
+        }
+    }
+
+    //deassert chip select
+    spi_transfer(0xFF);
+    CS_DISABLE();
+    spi_transfer(0xFF);
+
+    return token;
+}
+
+//single block write
+
+//multiblock read TODO: use DMA to transfer the data?
+static BYTE sd_multiple_read(DWORD addr, BYTE *buf, uint32_t cnt) {
+    //token
+    BYTE token = 0xFF;
+
+    //assert chip select
+    spi_transfer(0xFF);
+    CS_ENABLE();
+    spi_transfer(0xFF);
+
+    //ensure no errors in R1 response
+    BYTE R1 = sd_command(CMD18, addr);
+    if(R1 == 0x00) {
+        do {
+            //proceed
+            while((token = spi_transfer(0xFF)) != 0xFF) {
+                //TODO implement 100ms timeout
+            }
+            //recieved token
+            if (token == 0xFE) {
+                //read in data into buffer
+                for(uint16_t i = 0; i < 512; i++) {
+                    *buf++ = spi_transfer(0xFF);
+                }
+                //read in crc
+                spi_transfer(0xFF);
+                spi_transfer(0xFF);
+            } else { break; }
+        } while (--cnt);
+        //send stop transmission command
+        sd_command(CMD12, EMPTY_ARG);
+    }
+
+    //deassert chip select
+    spi_transfer(0xFF);
+    CS_DISABLE();
+    spi_transfer(0xFF);
+
+    return token;
+}
+
+//multiblock write
+
+
 //sd card initialization procedure
 static void sd_init() {
     //set card status uninitialized flag
@@ -169,7 +252,26 @@ DSTATUS disk_status (BYTE pdrv) {
 }
 
 DRESULT disk_read (BYTE pdrv, BYTE* buff, LBA_t sector, UINT count) {
+    //typeconvert start address
+    DWORD addr = (DWORD) sector;
 
+    //check count is valid
+    if(!count) { return RES_PARERR; }
+
+    //check card initialization status
+    if(card_status & STA_NOINIT) { return RES_NOTRDY; }
+
+    //read in data using appropriate command
+    if(count > 1) {
+        //multiple block read
+        if(sd_multiple_read(addr, buff, (uint32_t) count) != 0xFE) { return RES_ERROR; }
+    } else {
+        //single block read
+        if(sd_single_read(addr, buff) != 0xFE) { return RES_ERROR; }
+    }
+
+    //no errors occured, read successful
+    return RES_OK;
 }
 
 DRESULT disk_write (BYTE pdrv, const BYTE* buff, LBA_t sector, UINT count){
