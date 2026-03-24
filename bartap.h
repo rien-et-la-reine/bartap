@@ -60,4 +60,13 @@
 #define ADDR_ERROR          0b00100000
 #define PARAM_ERROR         0b01000000
 
+//time divisors
+#define YEAR_DIV            31540000000
+#define MONTH_DIV           2628000000
+#define DAY_DIV             86400000
+#define HR_DIV              3600000
+#define MIN_DIV             60000
+
 //TODO replace defines from sdk with ones here, want to remove dependance on sdk
+#define OFFSET_TIME_UPPER   0x70
+#define OFFSET_TIME_LOWER   0x74

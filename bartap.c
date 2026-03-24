@@ -4,6 +4,7 @@
 #include "hardware/spi.h"
 #include "hardware/dma.h"
 #include "hardware/pio.h"
+#include "hardware/platform_defs.h"
 
 //get datatypes
 #include "ff.h"
@@ -17,6 +18,8 @@ static volatile DSTATUS card_status = STA_NOINIT;
 
 //card type, 0x00 SDv1, 0x02 SDv2, 0x03 SDv2 High Capacity, 0x1X invalid card
 static BYTE card_type;
+
+//time
 
 /* Internal Driver Functions */
 
@@ -398,5 +401,90 @@ DRESULT disk_write (BYTE pdrv, const BYTE* buff, LBA_t sector, UINT count){
 }
 
 DRESULT disk_ioctl (BYTE pdrv, BYTE cmd, void* buff){
+    //check card initialization status
+    if(card_status & STA_NOINIT) { return RES_NOTRDY; }
 
+    //assert chip select
+    spi_transfer(0xFF);
+    CS_ENABLE();
+    spi_transfer(0xFF);
+
+    switch (cmd) {
+        case CTRL_SYNC:
+            //not necessary since all write operations are completed in the write function already in order to issue send_status command
+            //but in case I change something later
+            wait_busy();
+            //deassert chip select
+            CS_DISABLE();
+            spi_transfer(0xFF);
+            return RES_OK;
+        case CTRL_TRIM:
+            //unimplemented
+            break;
+        case GET_SECTOR_COUNT:
+            uint32_t i = 0;
+            BYTE csd[16];
+            if(sd_command(CMD9, EMPTY_ARG) == 0x00) {
+                do {
+                    csd[i++] = spi_transfer(0xFF);
+                } while(i < 16);
+                if((csd[0] >> 6) == 1) {
+                    *(LBA_t*)buff = (csd[9] + ((WORD)csd[8] << 8) + ((DWORD)(csd[7] & 63) << 16) + 1) << 10;
+                    //deassert chip select
+                    CS_DISABLE();
+                    spi_transfer(0xFF);                    
+                    return RES_OK;
+                } else {
+                    uint8_t n = (csd[5] & 15) + ((csd[10] & 128) >> 7) + ((csd[9] & 3) << 1) + 2;
+                    uint32_t csize = (csd[8] >> 6) + ((WORD)csd[7] << 2) + ((WORD)(csd[6] & 3) << 10) + 1;
+                    *(LBA_t*)buff = csize << (n - 9);
+                    //deassert chip select
+                    CS_DISABLE();
+                    spi_transfer(0xFF);
+                    return RES_OK;
+                }
+            }
+            break;
+        case GET_SECTOR_SIZE:
+            //unused since sector size is fixed at 512 bytes in ffconf
+            break;
+        case GET_BLOCK_SIZE:
+            *(DWORD*)buff = (DWORD) 1;
+            //deassert chip select
+            CS_DISABLE();
+            spi_transfer(0xFF);
+            return RES_OK;
+    
+        default:
+            //invalid command
+            //deassert chip select
+            CS_DISABLE();
+            spi_transfer(0xFF);
+
+            return RES_PARERR;
+    }
+
+    //deassert chip select
+    CS_DISABLE();
+    spi_transfer(0xFF);
+
+    return RES_ERROR;
+}
+
+DWORD get_fattime() {
+    QWORD time_ms;
+    uint8_t yr, mon, day, hr, min, sec;
+    do {
+        //read upper 32 bits
+        time_ms += (REG(POWMAN_BASE + OFFSET_TIME_UPPER) << 32);
+        //read lower 32 bits
+        time_ms += REG(POWMAN_BASE + OFFSET_TIME_LOWER);
+    } while(REG(POWMAN_BASE + OFFSET_TIME_UPPER) != (DWORD) (time_ms >> 32)); //read upper again, if mismatch repeat
+
+    return  (DWORD) ((time_ms / YEAR_DIV) - 1980) << 25 |
+            (DWORD) (((time_ms %= YEAR_DIV) / MONTH_DIV) + 1) << 21 |
+            (DWORD) ((time_ms %= MONTH_DIV) / DAY_DIV) << 16 |
+            (DWORD) ((time_ms %= DAY_DIV) / HR_DIV) << 11 |
+            (DWORD) ((time_ms %= HR_DIV) / MIN_DIV) << 5 |
+            (DWORD) ((time_ms %= MIN_DIV) / 1000) >> 1;
 }
