@@ -473,7 +473,7 @@ DRESULT disk_ioctl (BYTE pdrv, BYTE cmd, void* buff){
 
 DWORD get_fattime() {
     QWORD time_ms;
-    uint8_t yr, mon, day, hr, min, sec;
+
     do {
         //read upper 32 bits
         time_ms += (REG(POWMAN_BASE + OFFSET_TIME_UPPER) << 32);
