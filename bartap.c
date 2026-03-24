@@ -117,10 +117,10 @@ static BYTE sd_single_write(DWORD addr, BYTE *buf) {
     BYTE R1 = sd_command(CMD24, addr);
     if(R1 == 0x00) {
         //proceed
+        uint16_t i = 0;
         //send start token
         spi_transfer(DATA_START_TOKEN);
         //send datablock
-        uint16_t i = 0;
         while(i < 512) { spi_transfer(buf[i++]); }
 
         //get response token
@@ -132,6 +132,12 @@ static BYTE sd_single_write(DWORD addr, BYTE *buf) {
         if ((token & 0x1F) == 0x05) {
             //data accepted
             token = 0x05;
+            //send status command
+            sd_command(CMD13, EMPTY_ARG);
+            if (spi_transfer(0xFF) != 0x00) {
+                //R2 status response indicates programming error
+                token = 0xFF;
+            }
         }
     }
 
@@ -185,7 +191,59 @@ static BYTE sd_multiple_read(DWORD addr, BYTE *buf, uint32_t cnt) {
 }
 
 //multiblock write
+static BYTE sd_multiple_write(DWORD addr, BYTE *buf, uint32_t cnt) {
+    //token
+    BYTE token = 0xFF, R1;
 
+    //assert chip select
+    spi_transfer(0xFF);
+    CS_ENABLE();
+    spi_transfer(0xFF);
+
+    //preerase blocks
+    if(!(sd_command(CMD55, EMPTY_ARG))) {
+        R1 = sd_command(ACMD23, EMPTY_ARG + cnt);
+    }
+
+    if(R1 == 0x00) {
+        //send write multiple block command
+        R1 = sd_command(CMD25, addr);
+        if(R1 == 0x00) {
+            uint16_t i = 0;
+             while(cnt--) {
+                //send start token
+                spi_transfer(MBW_START_TOKEN);
+                //send datablock
+                while(i < 512) { spi_transfer(buf[i++]); }
+                //get response token
+                while((token = spi_transfer(0xFF)) == 0xFF) {
+                    //TODO: implement 250ms timeout
+                }
+                //recieved token
+                if ((token & 0x1F) != 0x05) {
+                    //data error
+                    break;
+                } else { token = 0x05; }
+                wait_busy();
+            }
+            //send stop transmission token
+            spi_transfer(MBW_STOP_TOKEN);
+            //send status command
+            sd_command(CMD13, EMPTY_ARG);
+            if (spi_transfer(0xFF) != 0x00) {
+                //R2 status response indicates programming error
+                token = 0xFF;
+            }
+        }
+    }
+
+    //deassert chip select
+    spi_transfer(0xFF);
+    CS_DISABLE();
+    spi_transfer(0xFF);
+
+    return token;
+}
 
 //sd card initialization procedure
 static void sd_init() {
@@ -321,7 +379,22 @@ DRESULT disk_read (BYTE pdrv, BYTE* buff, LBA_t sector, UINT count) {
 }
 
 DRESULT disk_write (BYTE pdrv, const BYTE* buff, LBA_t sector, UINT count){
+    //typeconvert start address
+    DWORD addr = (DWORD) sector;
 
+    //check count is valid
+    if(!count) { return RES_PARERR; }
+
+    //check card initialization status
+    if(card_status & STA_NOINIT) { return RES_NOTRDY; }
+
+    if(count == 1) {
+        if(sd_single_write(addr, buff) != 0x05) { return RES_ERROR; }
+    } else {
+        if(sd_multiple_write(addr, buff, (uint32_t) count) != 0x05) { return RES_ERROR; }
+    }
+
+    return RES_OK;
 }
 
 DRESULT disk_ioctl (BYTE pdrv, BYTE cmd, void* buff){

@@ -30,7 +30,7 @@
 #define CMD9	            9			// SEND_CSD
 #define CMD10	            10		    // SEND_CID 
 #define CMD12	            12		    // STOP_TRANSMISSION
-#define ACMD13	            13	        // SD_STATUS
+#define CMD13	            13	        // SD_STATUS
 #define CMD16	            16		    // SET_BLOCKLEN
 #define CMD17	            17		    // READ_SINGLE_BLOCK
 #define CMD18	            18		    // READ_MULTIPLE_BLOCK
@@ -45,6 +45,11 @@
 #define	CMD49	            49		    // WRITE_EXTR_SINGLE
 #define CMD55	            55		    // APP_CMD
 #define CMD58	            58		    // READ_OCR
+
+//sd write tokens
+#define DATA_START_TOKEN    0xFE
+#define MBW_START_TOKEN     0xFC
+#define MBW_STOP_TOKEN      0xFD
 
 //R1 error conditions
 #define IDLE_STATE          0b00000001
