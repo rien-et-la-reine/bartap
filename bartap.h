@@ -15,11 +15,11 @@
     #define PIN_MOSI    19
 #endif
 
-#ifndef CS_ENABLE()
+#ifndef CS_ENABLE
     //chip select macros
     #define CS_ENABLE()     REG(SIO_BASE + SIO_GPIO_OUT_CLR_OFFSET) = 1 << PIN_CS
 #endif
-#ifndef CS_DISABLE()
+#ifndef CS_DISABLE
     #define CS_DISABLE()    REG(SIO_BASE + SIO_GPIO_OUT_SET_OFFSET) = 1 << PIN_CS
 #endif
 
