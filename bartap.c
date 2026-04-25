@@ -107,7 +107,7 @@ static BYTE sd_single_read(DWORD addr, BYTE *buf) {
 }
 
 //single block write
-static BYTE sd_single_write(DWORD addr, BYTE *buf) {
+static BYTE sd_single_write(DWORD addr, const BYTE *buf) {
     //token
     BYTE token = 0xFF;
 
@@ -194,7 +194,7 @@ static BYTE sd_multiple_read(DWORD addr, BYTE *buf, uint32_t cnt) {
 }
 
 //multiblock write
-static BYTE sd_multiple_write(DWORD addr, BYTE *buf, uint32_t cnt) {
+static BYTE sd_multiple_write(DWORD addr, const BYTE *buf, uint32_t cnt) {
     //token
     BYTE token = 0xFF, R1;
 
@@ -476,7 +476,7 @@ DWORD get_fattime() {
 
     do {
         //read upper 32 bits
-        time_ms += (REG(POWMAN_BASE + OFFSET_TIME_UPPER) << 32);
+        time_ms += (((QWORD) (REG(POWMAN_BASE + OFFSET_TIME_UPPER))) << 32);
         //read lower 32 bits
         time_ms += REG(POWMAN_BASE + OFFSET_TIME_LOWER);
     } while(REG(POWMAN_BASE + OFFSET_TIME_UPPER) != (DWORD) (time_ms >> 32)); //read upper again, if mismatch repeat
