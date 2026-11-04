@@ -79,15 +79,28 @@ records.
 
 ## R12 — Bookmark contents
 
-- Fields, serialized one by one (never a struct dump):
-  - version, 1 byte
+- Fields, serialized one by one (never a struct dump), 23 bytes:
+  - version, 1 byte: covers the byte layout **and the text layer's behaviour**. Any change that can
+    alter text output or block boundaries (whitespace rules R4, control characters R21, element
+    classes R46, recovery R47, depth R33) bumps it, even if no field changes.
+  - book hash, 4 bytes: hash of the book's unique identifier (R25), using Bartap's name hash.
   - spine index, 2 bytes
   - block offset, 4 bytes: raw XHTML offset where the block starts
   - character offset, 4 bytes: text-record payload bytes into the block (R10); 4 bytes because a
     single block can exceed 64 KiB
   - chapter CRC-32, 4 bytes, taken from the central directory
-- If the chapter's CRC-32 no longer matches, the bookmark falls back to the start of that chapter.
-- A bookmark does not identify its book; which book it belongs to is the caller's to record.
+- Resolving a bookmark, each check falling back one level:
+  1. Book hash differs: the bookmark belongs to another book and is refused with an error; the
+     caller decides what to open instead.
+  2. Chapter CRC-32 differs: the chapter changed; land at the start of that chapter.
+  3. Version differs (book and chapter unchanged): the character offset is not meaningful under
+     the current rules, but the block offset is a raw position in the book's bytes. Land at the
+     start of the block containing that offset.
+  4. All match: exact landing at block offset and character offset.
+- The book hash uses the unique identifier rather than file bytes, so a bookmark survives the EPUB
+  being renamed, moved or repacked; content changes are caught by the chapter CRC-32 instead.
+- Rejected: anchoring the character position in raw bytes (exact across Bartap versions, but every
+  text record would carry a 4-byte source offset, for the sake of library upgrades).
 - 2 bytes of spine index are enough: a spine's length is bounded by the number of archive entries,
   and the caller's spine array runs out of RAM far below 65,535 items anyway.
 
@@ -351,6 +364,8 @@ records.
   - a bookmark round trip lands on the same block and character offset (R12);
   - XML read-ahead and compressed-input sizes do not change the output (R33);
   - a corrupted bookmark lands at the chapter start, never out of bounds (R29).
+  - each bookmark fallback level (R12) is taken exactly when its check fails: wrong book is refused,
+    changed chapter lands at its start, other version lands at the block start.
 - The pre-rewrite code is not used as a reference: it was never validated on hardware, so agreeing
   with it proves little.
 
@@ -405,7 +420,7 @@ records.
 
 - Every call returns one `bartap_err_t`. Non-error statuses: `OK`, `END` (a stream or iterator is
   finished), and verify's "more to do" (R38). Errors include I/O, corrupt, unsupported (R40),
-  argument, and buffer too small. Warnings are separate (R32).
+    argument, buffer too small, and wrong book (R12). Warnings are separate (R32).
 - `bartap_strerror` returns code names for logs (e.g. "BARTAP_ERR_CORRUPT"), not user-facing text;
   firmware maps codes to its own messages (consistent with R25: no display strings).
 - Values are not stable before a release; after 1.0 they are append-only.
