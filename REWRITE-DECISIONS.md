@@ -58,9 +58,8 @@ An image record carries the offset of the image entry's central-directory record
 path. (Revised from the local header offset to follow R22.)
 
 - The text layer looks the image's path up when it emits the record. With a directory buffer
-  (R24) this is a RAM walk (raw) or a RAM search plus one record read (hashed); with none, it is a
-  card walk per image, paid even if the caller never draws the image. A caller reading heavily
-  illustrated books without PSRAM can avoid that by passing a buffer.
+  (R24) this is a RAM walk; without one, it is a card walk per image, paid even if the caller never
+  draws the image. A caller reading heavily illustrated books can avoid that by passing a buffer.
 - Opening the image later starts from the directory record, the source of truth for its sizes,
   CRC-32 and local header offset.
 
@@ -202,19 +201,14 @@ records.
 - The central directory's size is known from the end record, so the mode is chosen up front:
   1. **Raw**: the whole central directory fits. It is read in one go, and every walk and lookup
      (at open and later) runs over it in RAM.
-  2. **Hashed**: it does not fit, but an index of entries (name hash, name length, directory-record
-     offset) does. The index is built during one full walk of the card; later lookups search it and
-     confirm a hit by reading that directory record (R22).
-  3. **None**: neither fits. The buffer is ignored and every walk reads the card.
+  2. **None**: it does not fit. The buffer is ignored and every walk reads the card.
 - A partial directory is never used.
-- In hashed mode, a hit in the index is always confirmed by reading that directory record and
-  comparing the name bytes (R22), so a hash collision costs one extra read and never gives a wrong
-  answer. The confirmation step is mandatory.
-- In hashed mode, the first walk (for `container.xml`) runs to the end and builds the index as it
-  goes; the OPF lookup and the spine match then run on the index, so opening reads the whole
-  directory from the card exactly once.
-- Testing: every lookup has three paths (raw, hashed, none) that must give identical results. Open
-  every fixture in each mode and compare the results, and run the fuzzers in all three modes.
+- Testing: every lookup has two paths (raw, none) that must give identical results. Open every
+  fixture in both modes and compare the results, and run the fuzzers in both.
+- Deferred: a **hashed** mode for directories too large for the buffer (an index of name hash,
+  length and directory-record offset, built in the first walk, every hit confirmed by reading the
+  directory record per R22). It changes no format or output, so it can be added later if real books
+  need it. Left out of the rewrite to keep the number of lookup paths down.
 
 ## R25 — Metadata copied at open
 
@@ -264,7 +258,7 @@ records.
   warnings when hit; every offset and length checked before use; errors as result codes, never
   undefined behaviour or aborts.
 - This covers the values the new design later dereferences: directory-record offsets (R9, R22) and
-  the hashed index (R24).
+  the directory buffer (R24).
 - A bookmark passed back by the caller (R12) is untrusted input too: a corrupted or edited bookmark
   file can hold any value. Seeking range-checks every field and falls back to the chapter start on
   anything invalid, as on a CRC mismatch.
@@ -353,7 +347,7 @@ records.
   - seeks served from a checkpoint and from a full replay give byte-identical pitchers (R48 P1);
   - a seek's output matches a straight read after normalising pitcher boundaries (R48 P2);
   - every buffer size from the minimum up gives the same concatenated content (R18);
-  - raw, hashed and no directory buffer give identical results (R24);
+  - raw and no directory buffer give identical results (R24);
   - a bookmark round trip lands on the same block and character offset (R12);
   - XML read-ahead and compressed-input sizes do not change the output (R33);
   - a corrupted bookmark lands at the chapter start, never out of bounds (R29).
@@ -391,24 +385,19 @@ records.
   bits; a larger value is unsupported. Consistent with the 4-byte offsets in bookmarks (R12),
   directory-record offsets (R22) and image records (R9).
 
-## R41 — Caller's spine array, full or compact (old D14 revised)
+## R41 — Caller's spine array, with truncation reported (old D14 revised)
 
-- The caller supplies an array of spine slots and its capacity, which must outlive the book. A slot
-  is a union (about 32 bytes) holding either one full item or about four compact ones, so the
-  caller declares `bartap_spine_slot_t spine[N]` by its real type (R28) and Bartap writes through
-  the matching member.
-- The first OPF pass counts the itemrefs before the directory walk, so Bartap chooses the mode up
-  front:
-  1. **Full**: the count fits. Each item holds its path hash and length, local header and
-     directory-record offsets, sizes, CRC-32, method and flags; a chapter opens with no lookup.
-  2. **Compact**: full items don't fit but compact ones do. Each holds path hash, length and the
-     linear flag; opening a chapter looks its entry up in the directory (cheap with R24's buffer).
-  3. **Truncated**: neither fits. Compact items for as many as fit, a truncation warning, and later
-     chapters unreachable.
-- The required item count is always reported, so a caller with spare memory can reopen with a
-  larger array and get full items.
-- Testing: open every fixture with arrays sized to force each mode; chapters and bookmarks must come
-  out identical.
+- The caller supplies an array of spine items and its capacity, which must outlive the book. Each
+  item (about 32 bytes) holds its path hash and length, local header and directory-record offsets,
+  sizes, CRC-32, method and flags, so a chapter opens with no lookup.
+- If the book has more spine items than the array holds, the first `capacity` are kept, a truncation
+  warning is set, and later chapters are unreachable.
+- The required item count is always reported (the first OPF pass counts itemrefs before the directory
+  walk), so a caller with spare memory can reopen with a larger array.
+- Deferred: a **compact** mode for spines too long for full items (about 8-byte items holding path
+  hash, length and linear flag, with each chapter's entry looked up when it is opened; slots become
+  a union of one full item or several compact ones, declared by real type per R28). It changes no
+  format or output, so it can be added later if real books need it.
 - A rolling spine (refilling a window by re-parsing the OPF) was rejected: OPF re-parses, TOC
   targets outside the window, and refill logic, for books no compact spine fails to hold.
 
@@ -424,7 +413,7 @@ records.
 ## R43 — Names compared ASCII case-insensitively (old D20 revised)
 
 - Entry names and resolved hrefs are compared byte for byte with ASCII letters folded to lower
-  case, always. All name hashes (spine, R22, R24's index, R41's compact items) use the same folding.
+  case, always. All name hashes (spine items, R22's lookups, and any later index) use the same folding.
   No case-mismatch warning: it is how lookup works, not a fault.
 - Spec basis: EPUB OCF requires file names in a directory to be unique after Unicode case
   normalization, which implies uniqueness under ASCII-only folding, so a conforming book can never
@@ -437,8 +426,8 @@ records.
 
 - When several entries match a name (identical, or differing only in case under R43), the first in
   central-directory order wins.
-- Every directory mode (R24) gives the same answer: the hashed index keeps directory order and a
-  search returns the earliest hit. Part of R36's identical-results property.
+- Every directory mode (R24) gives the same answer, as does any index added later (it must keep
+  directory order and return the earliest hit). Part of R36's identical-results property.
 - The full spine walk (R23) sets a duplicate-name warning when a second entry hits an already
   resolved spine slot. Single lookups stop at their first match and do not look for duplicates.
 
@@ -454,10 +443,14 @@ records.
   container (no end between its parts).
 - Every container-start record has the same payload: kind and ordinal. The ordinal is a signed
   4-byte value (HTML allows `start="-3"`, and `reversed` lists count past zero; out-of-range markup
-  values are clamped with a warning). It is a list item's number, computed by the text layer (honouring `start`, `reversed` and `value`) so layout
+  values are clamped with a warning). It is a list item's number, computed by the text layer (honouring `start` and `value`; `reversed` is
+  honoured when the list has a `start`) so layout
   never counts and a seek into a list re-emits the right number; it is 0 for other kinds.
 - Lists (`ol`, `ul`) and list items (`li`) are containers, not blocks: one item can hold several
   paragraphs.
+- `reversed` without `start` would number the first item with the list's item count, which a
+  streaming text layer does not know until the list ends. Such a list counts up from 1 instead, with
+  a warning. Rare in books; a pre-scan of the list was rejected as not worth it.
 - Rejected: a container path on every block start record (needs container identities and adds
   information to every block for no benefit in sequential reading or seeking). Cost accepted: a
   pitcher cannot be laid out alone, out of order, without the container stack from before it.
