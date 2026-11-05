@@ -1,6 +1,7 @@
 # Bartap rewrite — decisions
 
-Decisions for the manual rewrite of Bartap, settled 2026-11-04. The pre-rewrite code is `bartap` at
+Decisions for the manual rewrite of Bartap, settled 2026-11-04 and revised 2026-11-05 (one record
+per call, R20). The pre-rewrite code is `bartap` at
 `ccdc61d`; its D1–D22 (`lib/bartap/DECISIONS.md`) are all open to reconsideration except R1.
 
 ## R1 — Fixed constraints
@@ -19,11 +20,15 @@ Decisions for the manual rewrite of Bartap, settled 2026-11-04. The pre-rewrite 
 
 1. **Zip** — the archive and its entries, streamed out inflated.
 2. **OCF / package** — container, package and navigation; XML handling sits with this layer.
-3. **Text** — sends out text blocks, in a form a layout engine consumes, into a caller-given buffer.
+3. **Text** — returns the chapter's content one record per call (R6, R20), in a form a layout engine
+   consumes.
 
 ## R4 — Whitespace
 
-Whitespace collapsing happens in the text layer, so every caller gets the same words.
+- Whitespace collapsing happens in the text layer, so every caller gets the same words.
+- Collapsing state carries across style records: in `a <i> b</i>` the two spaces collapse to one, so
+  the italic text arrives as "b", not " b". This is what makes "no space at the join" (R6)
+  trustworthy.
 
 ## R5 — Images
 
@@ -32,27 +37,39 @@ block-level.
 
 ## R6 — Output is a sequence of records
 
-- Everything the text layer writes is a record: `[type][len][payload]`. Text, style, image and
-  anything added later use the same format.
-- `len` is 2 bytes. A text record is split only where a block is cut at the buffer's capacity, never
-  for the format's sake.
-- Because records are length-delimited, nothing is in-band: no marker byte is reserved in book text.
-- Consequence: a consumer must treat consecutive text records as one continuous run, with no implied
-  word boundary between them (buffer-edge splits, style changes mid-word).
+- The text layer returns one record per call (R20). A record is a typed struct, `bartap_record_t`:
+  a kind and that kind's fields. Kinds: block start (R16), container start and end (R45), text,
+  style (R7), image (R9), line break (`pre`, `<br>`), and TOC entry (R26).
+- A text record carries a pointer and length into a text buffer the caller provides. The text is
+  valid only until the next call, which reuses the buffer.
+- Text longer than the caller's text buffer is split into consecutive text records, at a UTF-8
+  character boundary.
+- Word boundaries are decided by text alone:
+  - a break opportunity is a space inside text (collapsed, R4) or a structural record: block start,
+    container start or end, line break, image, or `END`;
+  - style records never create one. `un<i>like</i>ly` arrives as text "un", style, text "like",
+    style, text "ly": no space at either join, so one word of three runs;
+  - consecutive text records, with only style records between them, are one continuous run.
+- An inline image is a break opportunity on both sides, as CSS treats inline replaced elements.
+- Consequence for layout: a word can span several calls, so layout copies each fragment into its own
+  word buffer before the next call, and needs its own maximum word length and a forced-break policy
+  for words longer than a line. Kerning across a style change is not attempted.
+- Forward compatibility: layout ignores record kinds it does not know (its `switch` default), which
+  is enough because Bartap is compiled with its caller (R28).
 
 ## R7 — Style records carry the complete style
 
 - A style record holds the whole current style, not a toggle of one attribute.
 - Unknown style bits are ignored; the known bits are still applied.
-- Style bits are independent and additive. A change that alters what existing bits mean bumps the
-  format version instead.
+- Style bits are independent and additive. A change that alters what existing bits mean is not made;
+  a new bit is added instead.
 
-## R8 — Every block part starts with its style
+## R8 — Style is restated at every block start
 
-Every block, and every continued part of a block cut across pitchers, starts with a style record
-after its start or continue record, so each part can be read without the one before it.
+- Every block start is followed by a style record, and the records after a seek (R49) include one,
+  so layout never needs style carried over from before a block or a seek.
 
-## R9 — Image payload
+## R9 — Image records
 
 An image record carries the offset of the image entry's central-directory record (4 bytes), not its
 path. (Revised from the local header offset to follow R22.)
@@ -65,8 +82,7 @@ path. (Revised from the local header offset to follow R22.)
 
 ## R10 — Bookmarks count text bytes only
 
-Character offsets in bookmarks count text-record payload bytes only, never record headers or other
-records.
+Character offsets in bookmarks count the bytes of text records only, never other records.
 
 ## R11 — Stream mode is a first-class path
 
@@ -86,7 +102,7 @@ records.
   - book hash, 4 bytes: hash of the book's unique identifier (R25), using Bartap's name hash.
   - spine index, 2 bytes
   - block offset, 4 bytes: raw XHTML offset where the block starts
-  - character offset, 4 bytes: text-record payload bytes into the block (R10); 4 bytes because a
+  - character offset, 4 bytes: text bytes into the block (R10); 4 bytes because a
     single block can exceed 64 KiB
   - chapter CRC-32, 4 bytes, taken from the central directory
 - Resolving a bookmark, each check falling back one level:
@@ -116,7 +132,7 @@ records.
 
 ## R14 — Pull, not push
 
-- The caller pulls the next block; the text layer pulls tokens from the tokenizer, which pulls bytes
+- The caller pulls the next record; the text layer pulls tokens from the tokenizer, which pulls bytes
   from its byte source.
 - Rationale: one pipeline serves normal reading, flipping back, seeking forward and back, bookmarks
   and TOC links. Under pull the layer doing the work knows which of these it is serving and can
@@ -132,11 +148,11 @@ records.
   from zip streams directly, so memory mode (R11) needs no second path.
 - It keeps its own interface, so it can be tested and fuzzed on its own.
 
-## R16 — Block headers are records
+## R16 — Block starts are records
 
-- A block's header is a block-start record (kind, level, source location, starting character
-  offset) in the same `[type][len][payload]` format as everything else (R6). The text layer's output
-  is only ever records.
+- A block begins with a block-start record: kind, level (headings), source location (spine index and
+  block offset) and starting character offset. The starting character offset is 0, except for the
+  first block after a seek that lands inside a block (R49).
 
 ## R17 — A text stream covers one spine item
 
@@ -146,45 +162,41 @@ records.
 - Moving across spine items, and the policy for non-linear items, is the caller's. Continuous
   reading can be built on top by the caller.
 - Rationale: one entry, one CRC-32, one replay scope; a corrupt item fails on its own.
-- Blocks are found by walking records; there is no directory record.
 
-## R18 — Blocks in a pitcher: start records back-patched with length and a continues flag
+## R18 — Block ends are implicit
 
-- One call fills the caller's buffer with as many blocks as fit (a pitcher, R20). A block that does
-  not fit is cut at the buffer's end and continues in the next call's pitcher.
-- Each block's part in a pitcher starts with a block-start record, or a continue record when it
-  carries on a block cut in the previous pitcher. A continue record carries the same kind, level and
-  source location, plus its own starting character offset.
-- Each start or continue record holds that part's byte length in the buffer and a flag saying
-  whether the block continues in the next pitcher. Both are filled in by going back once the part is
-  finished, before the call returns. No block-end record.
-- Walking from block to block reads only start and continue records. Layout knows whether a block
-  has finished when it reaches the end of its part.
-- Output granularity is at least one block (or the part of one that fits) per call, so
-  back-patching adds no visible latency.
+- Blocks are flat and have no end record. A block ends when the next call returns a block start, a
+  container start or end, or `END`.
+- With one record per call, layout learns that a block has finished one call later, which costs
+  nothing; it finishes the block's last line then.
+- (Superseded: blocks cut across pitchers with continue records, and back-patched lengths and
+  continues flags. Dropped with pitchers, R20.)
 
-## R19 — Integer widths and byte order
+## R19 — Byte order of stored fields
 
-- The record type field is 1 byte.
-- The byte length in a block-start or continue record is 4 bytes, so only the caller's buffer size
-  decides where blocks are cut.
-- Every multi-byte field, in records and in bookmarks (R12), is little-endian and written and read
-  byte by byte: no struct overlays, no unaligned accesses, correct on big-endian hosts.
+- Records are structs (R20), so they have no byte encoding. The only Bartap-defined bytes that are
+  stored are bookmarks (R12).
+- Every multi-byte bookmark field is little-endian and written and read byte by byte: no struct
+  overlays, no unaligned accesses, correct on big-endian hosts.
 
-## R20 — Pitchers
+## R20 — One record per call, as a struct (pitchers dropped)
 
-- A **pitcher** is everything one text call returns in the caller's buffer: one block, part of a
-  block, or several blocks with possibly a partial one at either end. The name is Bartap's own
-  unit, bar-themed like the library; the documentation and header comments must define it where it
-  is first used.
-- A pitcher starts with a record telling the caller what it holds (R49).
-- Generic words were avoided: "section" is an XHTML element (`<section>`), and "piece"/"segment"
-  say nothing specific to Bartap.
+- Each text or TOC call returns exactly one record, filled into a caller-declared `bartap_record_t`
+  (a tagged union, declared by its real type, R28).
+- Superseded design: a **pitcher**, a caller buffer packed with as many byte-encoded
+  `[type][len][payload]` records as fit, with pitcher-start records, blocks cut across pitchers,
+  back-patched lengths and flags, and a minimum buffer size.
+- Rationale: the byte encoding existed only to pack many records into one buffer. Nothing stores
+  records (R1) or sends them anywhere, so a struct removes the encoding and decoding, byte-order rules
+  and minimum-buffer arithmetic, and lets the compiler check every field access. Block ends and
+  context after a seek become simpler too (R18, R49).
+- Tests compare record sequences field by field, or through a canonical serialization in the test
+  harness (test code, not library code).
 
 ## R21 — Control characters are dropped from text
 
 - C0 controls and DEL (U+007F), and C1 controls (U+0080–U+009F) arriving through UTF-8 or character
-  references, are removed from text records, with a warning. Tab, LF and CR are handled by
+  references, are removed from text, with a warning. Tab, LF and CR are handled by
   whitespace collapsing (R4) and line-break records in `pre`.
 - With the Windows-1252 fallback, raw bytes 0x80–0x9F decode to punctuation, never to C1 controls.
 
@@ -235,15 +247,14 @@ records.
   count (1 byte, saturating at 255). Formatting the rest ("et al.", "+2", a localized phrase) is the
   caller's; Bartap writes no display strings. Tavernkeep appends "et al.".
 
-## R26 — The TOC uses the same record format
+## R26 — The TOC uses the same records
 
-- The TOC iterator fills the caller's buffer with records, in pitchers, like the text layer: one
-  output structure across the library, one parser for callers.
-- Each TOC entry is a block of its own kind: its start record carries the depth and the target
-  (spine index and fragment `id`); its label follows as style and text records, cut across pitchers
-  with continue records like any block (R18). Labels are not truncated.
-- Only text records are split across pitchers; every other record, including an entry's start record
-  with its target, must fit whole.
+- The TOC iterator returns one record per call, like the text layer: one output structure across
+  the library.
+- Each entry starts with a TOC-entry record carrying its depth and target (spine index, and the
+  fragment `id` as a pointer and length valid until the next call; it points into the tokenizer's
+  bounded attribute storage, R33, so it needs no extra memory). Its label follows as style and text
+  records. Labels are not truncated: a long label is several text records (R6).
 
 ## R27 — Every inflating call takes its window explicitly
 
@@ -311,7 +322,7 @@ records.
 - The caller may also pass a warning callback, called at each occurrence with the code and context
   (spine index, offset). It must return quickly and must not call into Bartap. NULL is always
   valid and costs nothing.
-- Warnings are not content, so they are outside the record format; records carry only content.
+- Warnings are not content, so they are not records; records carry only content.
 
 ## R33 — Limits: only output-neutral ones are configurable
 
@@ -328,7 +339,8 @@ records.
   far shorter), attribute buffer (1 KiB, also bounds
   fragment ids), formatting stack depth (32). The first three change only what is truncated or
   warned about; depth changes block structure and must never vary between builds.
-- Gone with the redesign: TOC label limit (R26), word limit (text is records), anchor size (R12).
+- Gone with the redesign: TOC label limit (R26), word limit (text is records), anchor size (R12),
+  minimum pitcher size (R50).
 - Values reviewed and kept as they are. Depth stays at 32 because it can never be raised later.
   The compressed-input default stays 512 B (one SD sector); Tavernkeep measures 512 B against 2 and
   4 KiB on hardware before choosing its own.
@@ -357,9 +369,10 @@ records.
   against Python's `zipfile`, under the fuzzers and the generated fixtures. This is the evidence R35
   needs.
 - **Properties, the core of the suite:** checked across all fixtures and fuzz inputs, e.g.
-  - seeks served from a checkpoint and from a full replay give byte-identical pitchers (R48 P1);
-  - a seek's output matches a straight read after normalising pitcher boundaries (R48 P2);
-  - every buffer size from the minimum up gives the same concatenated content (R18);
+  - seeks served from a checkpoint and from a full replay give identical record sequences (R48 P1);
+  - a seek's output matches a straight read after normalising (R48 P2);
+  - every text-buffer size from the minimum up gives the same content once consecutive text records
+    are merged (R6, R50);
   - raw and no directory buffer give identical results (R24);
   - a bookmark round trip lands on the same block and character offset (R12);
   - XML read-ahead and compressed-input sizes do not change the output (R33);
@@ -377,7 +390,7 @@ records.
 
 ## R38 — Synchronous calls, verify incremental (old D5 kept)
 
-- Opening a book and finding things in it run to completion. Text and TOC streams return one pitcher
+- Opening a book and finding things in it run to completion. Text and TOC streams return one record
   per call; resource streams one buffer per call. Real-time work belongs on another core or behind
   DMA; on a single core, the read callback is the hook for it.
 - Exception: verify (R31) is incremental. Each call does a bounded amount of work and reports
@@ -420,7 +433,7 @@ records.
 
 - Every call returns one `bartap_err_t`. Non-error statuses: `OK`, `END` (a stream or iterator is
   finished), and verify's "more to do" (R38). Errors include I/O, corrupt, unsupported (R40),
-    argument, buffer too small, and wrong book (R12). Warnings are separate (R32).
+  argument, buffer too small, and wrong book (R12). Warnings are separate (R32).
 - `bartap_strerror` returns code names for logs (e.g. "BARTAP_ERR_CORRUPT"), not user-facing text;
   firmware maps codes to its own messages (consistent with R25: no display strings).
 - Values are not stable before a release; after 1.0 they are append-only.
@@ -448,27 +461,26 @@ records.
 
 ## R45 — Containers as start and end records
 
-- Blocks are flat (R18: no block-end record). Nesting (quotes, lists, list items) is carried by
-  container-start and container-end records, emitted from the text layer's frame stack as it pushes
-  and pops, so they balance by construction even on broken markup.
-- Pitchers read in sequence carry container state forward: layout keeps a container stack across
-  calls (at most the frame depth, R33). After a seek or opening at a bookmark, layout starts with an
-  empty stack and the text layer first emits start records for every container open at that point.
-- Siblings stay distinct (an end, then a new start), and a container split across pitchers is one
-  container (no end between its parts).
-- Every container-start record has the same payload: kind and ordinal. The ordinal is a signed
-  4-byte value (HTML allows `start="-3"`, and `reversed` lists count past zero; out-of-range markup
-  values are clamped with a warning). It is a list item's number, computed by the text layer (honouring `start` and `value`; `reversed` is
-  honoured when the list has a `start`) so layout
-  never counts and a seek into a list re-emits the right number; it is 0 for other kinds.
+- Blocks are flat (R18). Nesting (quotes, lists, list items) is carried by container-start and
+  container-end records, emitted from the text layer's frame stack as it pushes and pops, so they
+  balance by construction even on broken markup.
+- Layout keeps a container stack across calls (at most the frame depth, R33). After a seek, layout
+  clears its stack and the text layer first emits start records for every container open at the
+  target (R49).
+- Siblings stay distinct (an end, then a new start).
+- Every container-start record has the same fields: kind and ordinal. The ordinal is a signed
+  32-bit value (HTML allows `start="-3"`, and `reversed` lists count past zero; out-of-range markup
+  values are clamped with a warning). It is a list item's number, computed by the text layer
+  (honouring `start` and `value`; `reversed` is honoured when the list has a `start`), so layout never
+  counts and a seek into a list re-emits the right number; it is 0 for other kinds.
 - Lists (`ol`, `ul`) and list items (`li`) are containers, not blocks: one item can hold several
   paragraphs.
 - `reversed` without `start` would number the first item with the list's item count, which a
   streaming text layer does not know until the list ends. Such a list counts up from 1 instead, with
   a warning. Rare in books; a pre-scan of the list was rejected as not worth it.
-- Rejected: a container path on every block start record (needs container identities and adds
-  information to every block for no benefit in sequential reading or seeking). Cost accepted: a
-  pitcher cannot be laid out alone, out of order, without the container stack from before it.
+- Rejected: a container path on every block-start record (needs container identities and adds
+  information to every block for no benefit in sequential reading or seeking). Cost accepted:
+  records cannot be laid out out of order without the container stack from before them.
 
 ## R46 — Element classes (old D17 revised)
 
@@ -483,7 +495,7 @@ records.
 
 - Text outside any block gets an implicit paragraph.
 - Tables are flattened: each cell's text becomes its own paragraph. Grid containers can be added
-  later as new kinds (unknown records are skippable, R6).
+  later as new kinds (layout ignores unknown kinds, R6).
 - `div` is a boundary, not a block: books that use `div` for paragraphs get implicit paragraphs, and
   blocks never nest.
 - Footnotes: an `aside` whose `epub:type` is `footnote`, `endnote` or `rearnote` is a `note`
@@ -533,50 +545,43 @@ records.
      refills and checkpoints restart from that replay.
   5. Bytes are folded into the CRC-32 once, when the stream first delivers them; replays from the
      ring do not re-fold them (R31 verifies the entry as a whole).
-- A seek's first pitcher: container starts for everything open at the target (R45); a continue record
-  if the bookmark's character offset is inside a block (R18), otherwise a block-start record; a style
-  record (R8); then text from the target. No new record type for resuming mid-block.
+- A seek's first records are as R49 describes; no special record kind for resuming mid-block.
 - Properties (R36):
-  - P1: the same target and buffer size give byte-identical pitchers whether the seek is served from a
-    checkpoint and the ring, or from a full replay from the chapter start.
+  - P1: the same target and text-buffer size give identical record sequences whether the seek is
+    served from a checkpoint and the ring, or from a full replay from the chapter start.
   - P2: from the target onward, a seek's output matches a straight read of the chapter after
-    normalising pitcher boundaries (continued parts merged, restated context dropped). Pitchers
-    themselves are not compared, since their boundaries depend on where the call started.
+    normalising: consecutive text records merged, the restated context at the seek dropped, and the
+    first block's starting character offset ignored.
 
-## R49 — The pitcher-start record
+## R49 — Records after a seek
 
-- Every pitcher begins with a pitcher-start record:
-  - total byte length of the pitcher, 4 bytes, filled in by going back once the pitcher is finished;
-  - a flags byte:
-    - **context reset**: layout must clear its container stack before applying what follows. Set
-      on the first pitcher after a seek or opening at a bookmark, which begins with re-emitted
-      container starts (R45);
-    - **chapter finished**: the chapter's last block is in this pitcher; the next call returns `END`;
-    - other bits reserved; readers ignore unknown bits (as with style, R7).
-- Not included: a block count (walking start records is cheap, R18) or a "begins mid-block" flag
-  (the first part's record type already says so).
+- Layout knows it has seeked (it made the call), so it clears its container stack and style itself;
+  no flag is needed.
+- The text layer's first records after a seek, or after opening at a bookmark: container starts for
+  every container open at the target (R45), a block-start record whose starting character offset is
+  the bookmark's (0 when landing at a block start), a style record (R8), then text from the target.
+- (Superseded: the pitcher-start record with its length and context-reset and chapter-finished
+  flags. The next call returning `END` replaces "chapter finished".)
 
-## R50 — Minimum buffer size
+## R50 — Minimum text buffer
 
-- Only text records are split across pitchers. Re-emitted container starts after a seek (R45) are
-  ordinary records and may continue into following pitchers; only the first carries the context-reset
-  flag (R49). Nesting depth therefore does not affect the minimum.
-- One published constant, `BARTAP_PITCHER_MIN`, covers text and TOC alike: a pitcher-start record,
-  the largest record that is never split (a TOC entry's start record with the longest fragment the
-  tokenizer's attribute storage allows, R33), a style record, and a text record holding one full
-  UTF-8 character. Roughly 1.05 KB; computed exactly once record layouts are fixed.
-- A smaller buffer is a "buffer too small" error (R42).
+- The caller's text buffer must hold at least one full UTF-8 character: `BARTAP_TEXT_MIN` is 4 bytes.
+  Larger buffers just mean fewer, longer text records. A smaller one is a "buffer too small" error
+  (R42).
+- TOC fragments do not use the text buffer (R26), so nothing else sets a minimum.
+- (Superseded: `BARTAP_PITCHER_MIN`, about 1.05 KB, set by the largest unsplittable byte record.)
 
 ## R51 — Hardware validation before the rewrite counts as done
 
 On the Pico 2 (SD breakout, output over RTT; no panels needed):
 
-- **Correctness:** for every fixture, a hash of all pitchers produced on the device equals the host
-  suite's hash. Exact match required.
+- **Correctness:** for every fixture, a hash of all records produced on the device (through the test
+  harness's canonical serialization) equals the host suite's hash. Exact match required.
 - **Timings:**
   - opening Pride and Prejudice (65 items), a large single-file book and an image-heavy book, in
     each directory mode (R24), with read counts — target: under 2 s for Pride and Prejudice;
-  - next pitcher (an ordinary page turn), stream and memory mode — target: under 50 ms;
+  - producing one page's worth of records (an ordinary page turn), stream and memory mode — target:
+    under 50 ms;
   - seeking back within the ring (from a checkpoint) and outside it (full replay), on the large
     single-file book — target within the ring: under 100 ms;
   - inflate throughput alone, and card read throughput with the compressed-input buffer at 512 B,
