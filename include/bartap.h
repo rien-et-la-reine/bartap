@@ -192,7 +192,7 @@ typedef struct {
 /* Declared by the caller by real type, so sizeof is the size. Fields are Bartap's: callers read
  * nothing from them. All are stubs until implemented; expect fields to change. */
 
-/* -- Layer 1: archive and entries (ocf.c) -- */
+/* -- Layer 1: archive and entries (zip.c) -- */
 
 /* Huffman tables live here; the window is the caller's (R27, R39). */
 typedef struct {
@@ -268,7 +268,7 @@ typedef struct {
     bartap_stream_t stream;
 } bartap_verify_t;
 
-/* -- Layer 2: tokenizer and package (epub.c) -- */
+/* -- Layer 2: tokenizer and package (xml.c, package.c) -- */
 
 struct bartap_rolling;
 
