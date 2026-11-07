@@ -37,8 +37,7 @@ bartap_err_t bt_inflate_fill(bartap_stream_t *stream);
 
 /* Central directory (R22, R24, R40, R43, R44). */
 typedef struct {
-    uint32_t offset;    /* next record */
-    uint32_t remaining; /* records left, bounding the walk (R29) */
+    uint32_t offset; /* next record. The directory's size bounds a walk (R29), not its count */
 } bt_dir_cursor_t;
 
 /* Finds the end record, reads ZIP64 where it fits, and chooses raw or none up front. */

@@ -23,6 +23,16 @@ bartap_add_test(test_stream unit/test_stream.c)
 bartap_add_test(test_directory unit/test_directory.c)
 bartap_add_test(test_inflate_zlib diff/test_inflate_zlib.c ZLIB::ZLIB)
 
+# Real zip files, against Python's zipfile (R36).
+add_executable(dump_directory diff/dump_directory.c)
+target_include_directories(dump_directory PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(dump_directory PRIVATE bartap)
+target_compile_options(dump_directory PRIVATE ${BARTAP_WARNING_FLAGS})
+set_target_properties(dump_directory PROPERTIES C_EXTENSIONS OFF)
+add_test(NAME test_directory_zipfile
+    COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/diff/check_directory_zipfile.py
+            $<TARGET_FILE:dump_directory>)
+
 # The compressed-input size must not change the output (R33). One byte puts a refill at every
 # possible point, so these rebuild zip.c with that size instead of using the library's.
 function(bartap_add_input1_test name source)
