@@ -1,6 +1,8 @@
 /* Layer 1 (R3): the archive and its entries. No XML here. */
+#include <stdint.h>
 #include <string.h>
 
+#include "bartap.h"
 #include "internal.h"
 
 /* ---- Results (R42) ---- */
@@ -147,7 +149,7 @@ uint16_t bt_get_le16(const uint8_t *p)
     //pull byte from p, place it into next available byte of uint16_t.
     uint16_t value = 0;
     value |= (uint16_t)p[0]; // least significant byte
-    value |= (uint16_t)p[1] << 8; // most significant byte
+    value |= (uint16_t) ((uint16_t)p[1] << 8); // most significant byte, casting after shifting to avoid overflow warning even though no overflow can actually occur
     return value;
 }
 
@@ -188,14 +190,414 @@ void bt_put_le32(uint8_t *p, uint32_t value)
 // clears inflate state, but does not touch the window (R27, R39), stream must handle those itself
 void bt_inflate_reset(bartap_inflate_t *inflate)
 {
-    (void)inflate;
+    // Zero is BT_INFLATE_HEADER, so the next fill starts by reading a block header.
+    memset(inflate, 0, sizeof(*inflate));
+}
+
+#define BT_INFLATE_MAX_MATCH 258u
+
+// Zero is the state a fresh stream starts in: between blocks, about to read a header.
+enum { BT_INFLATE_HEADER = 0, BT_INFLATE_STORED, BT_INFLATE_HUFFMAN, BT_INFLATE_DONE };
+
+// Window bytes free to write. window_write and window_read are running totals, so bytes not yet
+// delivered are never overwritten.
+static uint32_t window_space(const bartap_stream_t *stream)
+{
+    return BARTAP_WINDOW_SIZE - (stream->window_write - stream->window_read);
+}
+
+// Bytes the directory's size still allows. Going past it is corrupt, which bounds zip bombs.
+static uint32_t output_left(const bartap_stream_t *stream)
+{
+    return stream->entry.uncompressed_size - stream->window_write;
+}
+
+static void window_put(bartap_stream_t *stream, uint8_t byte)
+{
+    stream->window[stream->window_write & (BARTAP_WINDOW_SIZE - 1u)] = byte;
+    stream->window_write++;
+}
+
+// The next compressed byte, refilling the input buffer when empty. Running out is corrupt.
+static bartap_err_t next_byte(bartap_stream_t *stream, uint8_t *byte)
+{
+    if (stream->input_pos == stream->input_len) {
+        uint32_t left = stream->entry.compressed_size - stream->compressed_read;
+        uint32_t len = left < (uint32_t)BARTAP_INPUT_BUF ? left : (uint32_t)BARTAP_INPUT_BUF;
+        if (left == 0) {
+            return BARTAP_ERR_CORRUPT;
+        }
+        bartap_err_t err = bt_read(stream->source, stream->data_offset + stream->compressed_read,
+                                   stream->input, len);
+        if (err != BARTAP_OK) {
+            return err;
+        }
+        stream->compressed_read += len;
+        stream->input_pos = 0;
+        stream->input_len = len;
+    }
+    *byte = stream->input[stream->input_pos++];
+    return BARTAP_OK;
+}
+
+// Up to 16 bits, least significant first. Leftover bits stay in bit_buf between calls.
+static bartap_err_t read_bits(bartap_stream_t *stream, uint8_t count, uint32_t *value)
+{
+    bartap_inflate_t *inf = &stream->inflate;
+    while (inf->bit_count < count) {
+        uint8_t byte;
+        bartap_err_t err = next_byte(stream, &byte);
+        if (err != BARTAP_OK) {
+            return err;
+        }
+        inf->bit_buf |= (uint32_t)byte << inf->bit_count;
+        inf->bit_count = (uint8_t)(inf->bit_count + 8u);
+    }
+    *value = inf->bit_buf & ((1u << count) - 1u);
+    inf->bit_buf >>= count;
+    inf->bit_count = (uint8_t)(inf->bit_count - count);
+    return BARTAP_OK;
+}
+
+// Builds a canonical Huffman table from code lengths, each below 16. Returns the unused code space:
+// 0 is complete (or no codes at all), positive is incomplete, negative is over-subscribed.
+static int32_t build_codes(uint16_t *count, uint16_t *symbol, const uint8_t *lengths, uint16_t n)
+{
+    uint16_t offsets[16];
+    int32_t left = 1;
+
+    memset(count, 0, 16u * sizeof(*count));
+    for (uint16_t i = 0; i < n; i++) {
+        count[lengths[i]]++;
+    }
+    if (count[0] == n) {
+        return 0;
+    }
+    for (uint8_t len = 1; len < 16u; len++) {
+        left = left * 2 - (int32_t)count[len];
+        if (left < 0) {
+            return left;
+        }
+    }
+    offsets[1] = 0;
+    for (uint8_t len = 1; len < 15u; len++) {
+        offsets[len + 1] = (uint16_t)(offsets[len] + count[len]);
+    }
+    for (uint16_t i = 0; i < n; i++) {
+        if (lengths[i] != 0) {
+            symbol[offsets[lengths[i]]++] = i;
+        }
+    }
+    return left;
+}
+
+// A dynamic table must be complete, except that a single one-bit code is allowed (as in zlib).
+static bool codes_usable(int32_t left, const uint16_t *count, uint16_t n)
+{
+    return left == 0 || (left > 0 && (uint32_t)count[0] + count[1] == n);
+}
+
+// Walks one bit at a time. Slower than a lookup table, which R39 defers until profiling asks.
+static bartap_err_t decode_symbol(bartap_stream_t *stream, const uint16_t *count,
+                                  const uint16_t *symbol, uint16_t *out)
+{
+    int32_t code = 0;
+    int32_t first = 0;
+    int32_t index = 0;
+
+    for (uint8_t len = 1; len < 16u; len++) {
+        uint32_t bit;
+        bartap_err_t err = read_bits(stream, 1, &bit);
+        if (err != BARTAP_OK) {
+            return err;
+        }
+        code |= (int32_t)bit;
+        int32_t codes = count[len];
+        if (code - codes < first) {
+            *out = symbol[index + (code - first)];
+            return BARTAP_OK;
+        }
+        index += codes;
+        first = (first + codes) * 2;
+        code *= 2;
+    }
+    return BARTAP_ERR_CORRUPT;
+}
+
+static void build_fixed_tables(bartap_inflate_t *inf)
+{
+    uint8_t lengths[288];
+
+    memset(lengths, 8, 144);
+    memset(lengths + 144, 9, 112);
+    memset(lengths + 256, 7, 24);
+    memset(lengths + 280, 8, 8);
+    (void)build_codes(inf->lit_count, inf->lit_symbol, lengths, 288);
+
+    // All 32 get codes so the two invalid symbols decode and are rejected by inflate_symbol.
+    memset(lengths, 5, 32);
+    (void)build_codes(inf->dist_count, inf->dist_symbol, lengths, 32);
+}
+
+static bartap_err_t read_dynamic_tables(bartap_stream_t *stream)
+{
+    static const uint8_t order[19] = {16, 17, 18, 0,  8, 7,  9, 6,  10, 5,
+                                      11, 4,  12, 3, 13, 2, 14, 1, 15};
+    bartap_inflate_t *inf = &stream->inflate;
+    uint8_t lengths[286 + 30]; // the most codes a valid block can declare
+    uint16_t cl_count[16];
+    uint16_t cl_symbol[19];
+    uint32_t value;
+
+    bartap_err_t err = read_bits(stream, 14, &value);
+    if (err != BARTAP_OK) {
+        return err;
+    }
+    uint16_t lit_n = (uint16_t)((value & 31u) + 257u);
+    uint16_t dist_n = (uint16_t)(((value >> 5) & 31u) + 1u);
+    uint16_t cl_n = (uint16_t)(((value >> 10) & 15u) + 4u);
+    if (lit_n > 286u || dist_n > 30u) {
+        return BARTAP_ERR_CORRUPT;
+    }
+
+    memset(lengths, 0, 19);
+    for (uint16_t i = 0; i < cl_n; i++) {
+        err = read_bits(stream, 3, &value);
+        if (err != BARTAP_OK) {
+            return err;
+        }
+        lengths[order[i]] = (uint8_t)value;
+    }
+    if (build_codes(cl_count, cl_symbol, lengths, 19) != 0) {
+        return BARTAP_ERR_CORRUPT;
+    }
+
+    uint32_t total = (uint32_t)lit_n + dist_n;
+    uint32_t i = 0;
+    while (i < total) {
+        uint16_t sym;
+        err = decode_symbol(stream, cl_count, cl_symbol, &sym);
+        if (err != BARTAP_OK) {
+            return err;
+        }
+        if (sym < 16u) {
+            lengths[i++] = (uint8_t)sym;
+            continue;
+        }
+        if (sym == 16u && i == 0) {
+            return BARTAP_ERR_CORRUPT; // nothing to repeat
+        }
+        uint8_t repeated = sym == 16u ? lengths[i - 1u] : 0u;
+        uint8_t extra = sym == 16u ? 2u : (sym == 17u ? 3u : 7u);
+        err = read_bits(stream, extra, &value);
+        if (err != BARTAP_OK) {
+            return err;
+        }
+        uint32_t repeat = value + (sym == 18u ? 11u : 3u);
+        if (repeat > total - i) {
+            return BARTAP_ERR_CORRUPT;
+        }
+        memset(lengths + i, repeated, repeat);
+        i += repeat;
+    }
+
+    if (lengths[256] == 0) {
+        return BARTAP_ERR_CORRUPT; // no end-of-block code
+    }
+    int32_t left = build_codes(inf->lit_count, inf->lit_symbol, lengths, lit_n);
+    if (!codes_usable(left, inf->lit_count, lit_n)) {
+        return BARTAP_ERR_CORRUPT;
+    }
+    left = build_codes(inf->dist_count, inf->dist_symbol, lengths + lit_n, dist_n);
+    if (!codes_usable(left, inf->dist_count, dist_n)) {
+        return BARTAP_ERR_CORRUPT;
+    }
+    return BARTAP_OK;
+}
+
+static bartap_err_t read_block_header(bartap_stream_t *stream)
+{
+    bartap_inflate_t *inf = &stream->inflate;
+    uint32_t value;
+
+    bartap_err_t err = read_bits(stream, 3, &value);
+    if (err != BARTAP_OK) {
+        return err;
+    }
+    inf->final_block = (uint8_t)(value & 1u);
+    inf->block_type = (uint8_t)(value >> 1);
+
+    switch (inf->block_type) {
+    case 0: {
+        uint32_t len;
+        uint32_t nlen;
+        // Drop the padding. read_bits takes one byte at a time, so only padding is left in bit_buf.
+        inf->bit_buf = 0;
+        inf->bit_count = 0;
+        err = read_bits(stream, 16, &len);
+        if (err == BARTAP_OK) {
+            err = read_bits(stream, 16, &nlen);
+        }
+        if (err != BARTAP_OK) {
+            return err;
+        }
+        if ((len ^ nlen) != 0xFFFFu) {
+            return BARTAP_ERR_CORRUPT;
+        }
+        inf->stored_left = len;
+        inf->state = BT_INFLATE_STORED;
+        return BARTAP_OK;
+    }
+    case 1:
+        build_fixed_tables(inf);
+        inf->state = BT_INFLATE_HUFFMAN;
+        return BARTAP_OK;
+    case 2:
+        err = read_dynamic_tables(stream);
+        if (err != BARTAP_OK) {
+            return err;
+        }
+        inf->state = BT_INFLATE_HUFFMAN;
+        return BARTAP_OK;
+    default:
+        return BARTAP_ERR_CORRUPT;
+    }
+}
+
+static void end_block(bartap_inflate_t *inf)
+{
+    inf->state = inf->final_block ? BT_INFLATE_DONE : BT_INFLATE_HEADER;
+}
+
+// Copies what fits, and stored_left says where to carry on when the window has room again.
+static bartap_err_t copy_stored(bartap_stream_t *stream)
+{
+    bartap_inflate_t *inf = &stream->inflate;
+    uint32_t space = window_space(stream);
+    uint32_t len = inf->stored_left < space ? inf->stored_left : space;
+
+    if (len > output_left(stream)) {
+        return BARTAP_ERR_CORRUPT;
+    }
+    for (uint32_t i = 0; i < len; i++) {
+        uint32_t value;
+        bartap_err_t err = read_bits(stream, 8, &value);
+        if (err != BARTAP_OK) {
+            return err;
+        }
+        window_put(stream, (uint8_t)value);
+    }
+    inf->stored_left -= len;
+    if (inf->stored_left == 0) {
+        end_block(inf);
+    }
+    return BARTAP_OK;
+}
+
+// One symbol: a literal, the end of the block, or a whole match.
+static bartap_err_t inflate_symbol(bartap_stream_t *stream)
+{
+    static const uint16_t length_base[29] = {3,  4,  5,  6,  7,  8,  9,  10,  11,  13,
+                                             15, 17, 19, 23, 27, 31, 35, 43,  51,  59,
+                                             67, 83, 99, 115, 131, 163, 195, 227, 258};
+    static const uint8_t length_extra[29] = {0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2,
+                                             2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0};
+    static const uint16_t dist_base[30] = {1,    2,    3,    4,    5,    7,    9,    13,
+                                           17,   25,   33,   49,   65,   97,   129,  193,
+                                           257,  385,  513,  769,  1025, 1537, 2049, 3073,
+                                           4097, 6145, 8193, 12289, 16385, 24577};
+    static const uint8_t dist_extra[30] = {0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6,
+                                           6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13};
+    bartap_inflate_t *inf = &stream->inflate;
+    uint16_t sym;
+    uint32_t extra;
+
+    bartap_err_t err = decode_symbol(stream, inf->lit_count, inf->lit_symbol, &sym);
+    if (err != BARTAP_OK) {
+        return err;
+    }
+    if (sym < 256u) {
+        if (output_left(stream) == 0) {
+            return BARTAP_ERR_CORRUPT;
+        }
+        window_put(stream, (uint8_t)sym);
+        return BARTAP_OK;
+    }
+    if (sym == 256u) {
+        end_block(inf);
+        return BARTAP_OK;
+    }
+    if (sym > 285u) {
+        return BARTAP_ERR_CORRUPT;
+    }
+
+    err = read_bits(stream, length_extra[sym - 257u], &extra);
+    if (err != BARTAP_OK) {
+        return err;
+    }
+    uint32_t length = length_base[sym - 257u] + extra;
+
+    err = decode_symbol(stream, inf->dist_count, inf->dist_symbol, &sym);
+    if (err != BARTAP_OK) {
+        return err;
+    }
+    if (sym > 29u) {
+        return BARTAP_ERR_CORRUPT;
+    }
+    err = read_bits(stream, dist_extra[sym], &extra);
+    if (err != BARTAP_OK) {
+        return err;
+    }
+    uint32_t distance = dist_base[sym] + extra;
+
+    // window_write counts all output so far, so this rejects reaching before the entry's start.
+    if (distance > stream->window_write || length > output_left(stream)) {
+        return BARTAP_ERR_CORRUPT;
+    }
+    for (uint32_t i = 0; i < length; i++) {
+        window_put(stream,
+                   stream->window[(stream->window_write - distance) & (BARTAP_WINDOW_SIZE - 1u)]);
+    }
+    return BARTAP_OK;
 }
 
 // pull compressed input as needed and decode into stream
 bartap_err_t bt_inflate_fill(bartap_stream_t *stream)
 {
-    (void)stream;
-    return BARTAP_ERR_UNSUPPORTED;
+    bartap_inflate_t *inf = &stream->inflate;
+
+    // Each pass does one bounded unit of work, so the space check runs before every symbol.
+    while (true) {
+        bartap_err_t err;
+
+        if (window_space(stream) < BT_INFLATE_MAX_MATCH) {
+            return BARTAP_OK;
+        }
+
+        switch (inf->state) {
+        case BT_INFLATE_DONE:
+            return BARTAP_OK;
+
+        case BT_INFLATE_HEADER:
+            err = read_block_header(stream);
+            break;
+
+        case BT_INFLATE_STORED:
+            err = copy_stored(stream);
+            break;
+
+        case BT_INFLATE_HUFFMAN:
+            err = inflate_symbol(stream);
+            break;
+
+        default:
+            return BARTAP_ERR_CORRUPT;
+        }
+
+        if (err != BARTAP_OK) {
+            return err;
+        }
+    }
 }
 
 /* ---- Central directory (R22, R24, R40, R43, R44) ---- */
@@ -265,43 +667,159 @@ bartap_err_t bt_dir_find(const bartap_directory_t *dir, const char *name, uint16
 
 /* ---- Entry streams (R31) ---- */
 
-// Starts streaming an entry's inflated bytes through the caller's window.
+#define BT_LOCAL_HEADER_SIZE 30u
+#define BT_LOCAL_HEADER_SIGNATURE 0x04034B50u
+
+// Back to the entry's first byte. A stored entry is decoded as one final stored block, so both
+// methods share the window, the size limit and the end-of-entry checks.
+static void stream_start(bartap_stream_t *stream)
+{
+    stream->compressed_read = 0;
+    stream->delivered = 0;
+    stream->crc32 = 0;
+    stream->window_write = 0;
+    stream->window_read = 0;
+    stream->window_valid = 0;
+    stream->input_pos = 0;
+    stream->input_len = 0;
+    stream->status = BARTAP_OK;
+    bt_inflate_reset(&stream->inflate);
+    if (stream->entry.method == 0) {
+        stream->inflate.state = BT_INFLATE_STORED;
+        stream->inflate.stored_left = stream->entry.uncompressed_size;
+        stream->inflate.final_block = 1;
+    }
+}
+
+// The local header only locates the data: names, sizes and CRC come from the directory (R22).
+static bartap_err_t stream_find_data(bartap_stream_t *stream)
+{
+    const uint32_t size = stream->source->size;
+    uint8_t header[BT_LOCAL_HEADER_SIZE];
+
+    bartap_err_t err = bt_read(stream->source, stream->entry.local_offset, header,
+                               BT_LOCAL_HEADER_SIZE);
+    if (err != BARTAP_OK) {
+        return err;
+    }
+    if (bt_get_le32(header) != BT_LOCAL_HEADER_SIGNATURE) {
+        return BARTAP_ERR_CORRUPT;
+    }
+    uint32_t skip = BT_LOCAL_HEADER_SIZE + (uint32_t)bt_get_le16(header + 26) +
+                    bt_get_le16(header + 28);
+    if (skip > size || stream->entry.local_offset > size - skip) {
+        return BARTAP_ERR_CORRUPT;
+    }
+    stream->data_offset = stream->entry.local_offset + skip;
+    if (stream->entry.compressed_size > size - stream->data_offset) {
+        return BARTAP_ERR_CORRUPT;
+    }
+    return BARTAP_OK;
+}
+
+// Copies bytes from the window by their offset in the entry. The caller has checked the range.
+static void window_copy(const bartap_stream_t *stream, uint32_t offset, uint8_t *buf, uint32_t len)
+{
+    uint32_t pos = offset & (BARTAP_WINDOW_SIZE - 1u);
+    uint32_t first = BARTAP_WINDOW_SIZE - pos;
+
+    if (first > len) {
+        first = len;
+    }
+    memcpy(buf, stream->window + pos, first);
+    memcpy(buf + first, stream->window, len - first);
+}
+
+// Starts streaming an entry's inflated bytes through the caller's window. After a failure the
+// stream only returns that failure: a NULL source marks it as never having opened.
 bartap_err_t bt_stream_open(bartap_stream_t *stream, const bartap_source_t *source,
                             const bartap_entry_t *entry, uint8_t *window)
 {
-    (void)stream;
-    (void)source;
-    (void)entry;
-    (void)window;
-    return BARTAP_ERR_UNSUPPORTED;
+    bartap_err_t err = BARTAP_ERR_UNSUPPORTED;
+
+    stream->source = source;
+    stream->entry = *entry;
+    stream->window = window;
+    stream->data_offset = 0;
+    stream_start(stream);
+
+    if (stream->entry.method == 0 || stream->entry.method == 8) {
+        err = stream_find_data(stream);
+    }
+    if (err != BARTAP_OK) {
+        stream->source = NULL;
+        stream->status = err;
+    }
+    return err;
 }
 
-// Delivers the next bytes; BARTAP_END only once the CRC and size match.
+// Delivers the next bytes; BARTAP_END only once the CRC and size match. A failure or the end is
+// sticky until a rewind.
 bartap_err_t bt_stream_read(bartap_stream_t *stream, uint8_t *buf, uint32_t cap, uint32_t *got)
 {
-    (void)stream;
-    (void)buf;
-    (void)cap;
-    (void)got;
-    return BARTAP_ERR_UNSUPPORTED;
+    *got = 0;
+    if (stream->status != BARTAP_OK) {
+        return stream->status;
+    }
+    if (cap == 0) {
+        return BARTAP_ERR_ARG;
+    }
+
+    if (stream->window_write == stream->window_read) {
+        bartap_err_t err = bt_inflate_fill(stream);
+        // Before checking err: a failed fill may still have overwritten older bytes.
+        stream->window_valid = stream->window_write < BARTAP_WINDOW_SIZE ? stream->window_write
+                                                                         : BARTAP_WINDOW_SIZE;
+        if (err != BARTAP_OK) {
+            stream->status = err;
+            return err;
+        }
+        // An empty window always has room, so a fill that added nothing has reached the end.
+        if (stream->window_write == stream->window_read) {
+            bool intact = stream->window_write == stream->entry.uncompressed_size &&
+                          stream->crc32 == stream->entry.crc32;
+            stream->status = intact ? BARTAP_END : BARTAP_ERR_CORRUPT;
+            return stream->status;
+        }
+    }
+
+    uint32_t len = stream->window_write - stream->window_read;
+    if (len > cap) {
+        len = cap;
+    }
+    window_copy(stream, stream->window_read, buf, len);
+    stream->crc32 = bt_crc32(stream->crc32, buf, len);
+    stream->window_read += len;
+    stream->delivered += len;
+    *got = len;
+    return BARTAP_OK;
 }
 
-// Returns to the entry's start and restarts the CRC check.
+// Returns to the entry's start and restarts the CRC check. Clears a failure or the end.
 bartap_err_t bt_stream_rewind(bartap_stream_t *stream)
 {
-    (void)stream;
-    return BARTAP_ERR_UNSUPPORTED;
+    if (stream->source == NULL) {
+        return stream->status;
+    }
+    stream_start(stream);
+    return BARTAP_OK;
 }
 
-// Copies already-delivered bytes back out of the window; BARTAP_END if they have left it.
+// Copies already-delivered bytes back out of the window; BARTAP_END if they have left it, and
+// BARTAP_ERR_ARG if they have not been delivered yet.
 bartap_err_t bt_stream_reread(const bartap_stream_t *stream, uint32_t offset, uint8_t *buf,
                               uint32_t len)
 {
-    (void)stream;
-    (void)offset;
-    (void)buf;
-    (void)len;
-    return BARTAP_ERR_UNSUPPORTED;
+    if (offset > stream->delivered || len > stream->delivered - offset) {
+        return BARTAP_ERR_ARG;
+    }
+    if (offset < stream->window_write - stream->window_valid) {
+        return BARTAP_END;
+    }
+    if (len != 0) {
+        window_copy(stream, offset, buf, len);
+    }
+    return BARTAP_OK;
 }
 
 /* ---- Verify (R31, R38) ---- */

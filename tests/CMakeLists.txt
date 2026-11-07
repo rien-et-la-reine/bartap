@@ -19,6 +19,24 @@ if(NOT ZLIB_FOUND)
     message(FATAL_ERROR "zlib is required for the differential tests")
 endif()
 bartap_add_test(test_crc_zlib diff/test_crc_zlib.c ZLIB::ZLIB)
+bartap_add_test(test_stream unit/test_stream.c)
+bartap_add_test(test_inflate_zlib diff/test_inflate_zlib.c ZLIB::ZLIB)
+
+# The compressed-input size must not change the output (R33). One byte puts a refill at every
+# possible point, so these rebuild zip.c with that size instead of using the library's.
+function(bartap_add_input1_test name source)
+    add_executable(${name} ${source} ${PROJECT_SOURCE_DIR}/src/zip.c)
+    target_include_directories(${name} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR} ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src)
+    target_compile_definitions(${name} PRIVATE BARTAP_INPUT_BUF=1)
+    target_link_libraries(${name} PRIVATE ${ARGN})
+    target_compile_options(${name} PRIVATE ${BARTAP_WARNING_FLAGS})
+    set_target_properties(${name} PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+    add_test(NAME ${name} COMMAND ${name})
+endfunction()
+
+bartap_add_input1_test(test_stream_input1 unit/test_stream.c)
+bartap_add_input1_test(test_inflate_zlib_input1 diff/test_inflate_zlib.c ZLIB::ZLIB)
 
 # Sanitizer runtimes add symbols of their own, so the check only means something on a plain build.
 if(NOT BARTAP_SANITIZE)

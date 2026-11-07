@@ -29,6 +29,8 @@ target_compile_definitions(bartap PUBLIC
     BARTAP_XML_READAHEAD=${BARTAP_XML_READAHEAD})
 target_compile_features(bartap PUBLIC c_std_11)
 target_compile_options(bartap PRIVATE ${BARTAP_WARNING_FLAGS})
+# Some toolchains enable this by default, and it needs __stack_chk_fail, which R34 and R35 rule out.
+target_compile_options(bartap PRIVATE $<$<C_COMPILER_ID:GNU,Clang>:-fno-stack-protector>)
 set_target_properties(bartap PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 
 if(BARTAP_BUILD_TESTS)
