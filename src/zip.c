@@ -139,24 +139,30 @@ uint32_t bt_crc32(uint32_t crc, const uint8_t *data, size_t len)
 
 /* ---- Everything below is a stub ---- */
 
+// convert little-endian bytes to host-endian integers, and vice versa.
+
+// Reads a little-endian 16-bit value from p.
 uint16_t bt_get_le16(const uint8_t *p)
 {
     (void)p;
     return 0;
 }
 
+// Reads a little-endian 32-bit value from p.
 uint32_t bt_get_le32(const uint8_t *p)
 {
     (void)p;
     return 0;
 }
 
+// Writes value to p as little-endian 16 bits.
 void bt_put_le16(uint8_t *p, uint16_t value)
 {
     (void)p;
     (void)value;
 }
 
+// Writes value to p as little-endian 32 bits.
 void bt_put_le32(uint8_t *p, uint32_t value)
 {
     (void)p;
@@ -165,11 +171,13 @@ void bt_put_le32(uint8_t *p, uint32_t value)
 
 /* ---- Inflate (R39) ---- */
 
+// clears inflate state, but does not touch the window (R27, R39), stream must handle those itself
 void bt_inflate_reset(bartap_inflate_t *inflate)
 {
     (void)inflate;
 }
 
+// pull compressed input as needed and decode into stream
 bartap_err_t bt_inflate_fill(bartap_stream_t *stream)
 {
     (void)stream;
@@ -178,6 +186,8 @@ bartap_err_t bt_inflate_fill(bartap_stream_t *stream)
 
 /* ---- Central directory (R22, R24, R40, R43, R44) ---- */
 
+// 
+// Locates the central directory and chooses raw or card-backed access up front.
 bartap_err_t bt_dir_init(bartap_directory_t *dir, const bartap_source_t *source, uint8_t *buf,
                          uint32_t buf_size)
 {
@@ -188,12 +198,14 @@ bartap_err_t bt_dir_init(bartap_directory_t *dir, const bartap_source_t *source,
     return BARTAP_ERR_UNSUPPORTED;
 }
 
+// Points a cursor at the directory's first record.
 void bt_dir_begin(const bartap_directory_t *dir, bt_dir_cursor_t *cursor)
 {
     (void)dir;
     (void)cursor;
 }
 
+// Returns the next record with its name hash and length, or BARTAP_END after the last.
 bartap_err_t bt_dir_next(const bartap_directory_t *dir, bt_dir_cursor_t *cursor,
                          bartap_entry_t *entry, uint32_t *name_hash, uint16_t *name_len)
 {
@@ -205,6 +217,7 @@ bartap_err_t bt_dir_next(const bartap_directory_t *dir, bt_dir_cursor_t *cursor,
     return BARTAP_ERR_UNSUPPORTED;
 }
 
+// Loads the entry at a directory-record offset, which may be untrusted.
 bartap_err_t bt_dir_entry(const bartap_directory_t *dir, uint32_t dir_offset, bartap_entry_t *entry)
 {
     (void)dir;
@@ -213,6 +226,7 @@ bartap_err_t bt_dir_entry(const bartap_directory_t *dir, uint32_t dir_offset, ba
     return BARTAP_ERR_UNSUPPORTED;
 }
 
+// Copies an entry's real name out of its directory record.
 bartap_err_t bt_dir_name(const bartap_directory_t *dir, uint32_t dir_offset, char *buf, uint32_t cap,
                          uint16_t *len)
 {
@@ -224,6 +238,7 @@ bartap_err_t bt_dir_name(const bartap_directory_t *dir, uint32_t dir_offset, cha
     return BARTAP_ERR_UNSUPPORTED;
 }
 
+// Finds an entry by name; the first match in directory order wins, else BARTAP_END.
 bartap_err_t bt_dir_find(const bartap_directory_t *dir, const char *name, uint16_t name_len,
                          bartap_entry_t *entry)
 {
@@ -236,6 +251,7 @@ bartap_err_t bt_dir_find(const bartap_directory_t *dir, const char *name, uint16
 
 /* ---- Entry streams (R31) ---- */
 
+// Starts streaming an entry's inflated bytes through the caller's window.
 bartap_err_t bt_stream_open(bartap_stream_t *stream, const bartap_source_t *source,
                             const bartap_entry_t *entry, uint8_t *window)
 {
@@ -246,6 +262,7 @@ bartap_err_t bt_stream_open(bartap_stream_t *stream, const bartap_source_t *sour
     return BARTAP_ERR_UNSUPPORTED;
 }
 
+// Delivers the next bytes; BARTAP_END only once the CRC and size match.
 bartap_err_t bt_stream_read(bartap_stream_t *stream, uint8_t *buf, uint32_t cap, uint32_t *got)
 {
     (void)stream;
@@ -255,12 +272,14 @@ bartap_err_t bt_stream_read(bartap_stream_t *stream, uint8_t *buf, uint32_t cap,
     return BARTAP_ERR_UNSUPPORTED;
 }
 
+// Returns to the entry's start and restarts the CRC check.
 bartap_err_t bt_stream_rewind(bartap_stream_t *stream)
 {
     (void)stream;
     return BARTAP_ERR_UNSUPPORTED;
 }
 
+// Copies already-delivered bytes back out of the window; BARTAP_END if they have left it.
 bartap_err_t bt_stream_reread(const bartap_stream_t *stream, uint32_t offset, uint8_t *buf,
                               uint32_t len)
 {
@@ -273,6 +292,7 @@ bartap_err_t bt_stream_reread(const bartap_stream_t *stream, uint32_t offset, ui
 
 /* ---- Verify (R31, R38) ---- */
 
+// Prepares an incremental CRC check of a spine item's entry.
 bartap_err_t bartap_verify_init(bartap_verify_t *verify, const bartap_book_t *book,
                                 uint16_t spine_index, uint8_t *window)
 {
@@ -283,6 +303,7 @@ bartap_err_t bartap_verify_init(bartap_verify_t *verify, const bartap_book_t *bo
     return BARTAP_ERR_UNSUPPORTED;
 }
 
+// Prepares an incremental CRC check of the entry at a directory-record offset.
 bartap_err_t bartap_verify_init_dir(bartap_verify_t *verify, const bartap_book_t *book,
                                     uint32_t dir_offset, uint8_t *window)
 {
@@ -293,6 +314,7 @@ bartap_err_t bartap_verify_init_dir(bartap_verify_t *verify, const bartap_book_t
     return BARTAP_ERR_UNSUPPORTED;
 }
 
+// Inflates up to max_bytes; BARTAP_MORE, BARTAP_OK when the entry checks out, or an error.
 bartap_err_t bartap_verify_step(bartap_verify_t *verify, uint32_t max_bytes)
 {
     (void)verify;
@@ -302,6 +324,7 @@ bartap_err_t bartap_verify_step(bartap_verify_t *verify, uint32_t max_bytes)
 
 /* ---- Resources (R38) ---- */
 
+// Opens a resource by name for reading.
 bartap_err_t bartap_resource_open(bartap_resource_t *res, const bartap_book_t *book,
                                   const char *path, uint32_t path_len, uint8_t *window)
 {
@@ -313,6 +336,7 @@ bartap_err_t bartap_resource_open(bartap_resource_t *res, const bartap_book_t *b
     return BARTAP_ERR_UNSUPPORTED;
 }
 
+// Opens a resource from an untrusted directory-record offset, such as an image record's.
 bartap_err_t bartap_resource_open_dir(bartap_resource_t *res, const bartap_book_t *book,
                                       uint32_t dir_offset, uint8_t *window)
 {
@@ -323,6 +347,7 @@ bartap_err_t bartap_resource_open_dir(bartap_resource_t *res, const bartap_book_
     return BARTAP_ERR_UNSUPPORTED;
 }
 
+// Opens a whole chapter by spine index, such as for inflating it into PSRAM.
 bartap_err_t bartap_resource_open_spine(bartap_resource_t *res, const bartap_book_t *book,
                                         uint16_t spine_index, uint8_t *window)
 {
@@ -333,12 +358,14 @@ bartap_err_t bartap_resource_open_spine(bartap_resource_t *res, const bartap_boo
     return BARTAP_ERR_UNSUPPORTED;
 }
 
+// Returns the entry's inflated size, for sizing a destination.
 uint32_t bartap_resource_size(const bartap_resource_t *res)
 {
     (void)res;
     return 0;
 }
 
+// Delivers the next bytes; BARTAP_END only once the CRC and size match.
 bartap_err_t bartap_resource_read(bartap_resource_t *res, uint8_t *buf, uint32_t cap, uint32_t *got)
 {
     (void)res;
