@@ -2,6 +2,7 @@
 #ifndef BARTAP_H
 #define BARTAP_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -33,6 +34,7 @@ _Static_assert(BARTAP_XML_READAHEAD > 0, "BARTAP_XML_READAHEAD must be positive"
 #define BARTAP_TEXT_MIN 4u     /* smallest text buffer: one full UTF-8 character (R50) */
 #define BARTAP_WINDOW_SIZE 32768u /* inflate window (R27) */
 #define BARTAP_BOOKMARK_SIZE 23u  /* serialized bookmark (R12) */
+#define BARTAP_BOOKMARK_VERSION 1u /* bump on any change to text output or block boundaries (R12) */
 
 #define BARTAP_NO_SPINE 0xFFFFu /* TOC entry with no resolvable target (R26) */
 
@@ -184,6 +186,402 @@ typedef struct {
         } toc;
     };
 } bartap_record_t;
+
+/* ---- State structs (R28) ------------------------------------------------------------------ */
+
+/* Declared by the caller by real type, so sizeof is the size. Fields are Bartap's: callers read
+ * nothing from them. All are stubs until implemented; expect fields to change. */
+
+/* -- Layer 1: archive and entries (ocf.c) -- */
+
+/* Huffman tables live here; the window is the caller's (R27, R39). */
+typedef struct {
+    uint32_t bit_buf;
+    uint8_t bit_count;
+    uint8_t block_type;
+    uint8_t final_block;
+    uint8_t state;
+    uint32_t stored_left;
+    uint16_t lit_count[16];
+    uint16_t lit_symbol[288];
+    uint16_t dist_count[16];
+    uint16_t dist_symbol[32];
+} bartap_inflate_t;
+
+/* An entry's facts, always from its central-directory record (R22). */
+typedef struct {
+    uint32_t dir_offset;
+    uint32_t local_offset;
+    uint32_t compressed_size;
+    uint32_t uncompressed_size;
+    uint32_t crc32;
+    uint16_t method; /* 0 stored, 8 deflate */
+} bartap_entry_t;
+
+/* One entry, streamed out inflated, checked as bytes pass (R31). */
+typedef struct {
+    const bartap_source_t *source;
+    bartap_entry_t entry;
+    uint32_t data_offset;     /* past the local header */
+    uint32_t compressed_read;
+    uint32_t delivered;
+    uint32_t crc32;
+    uint8_t *window;          /* BARTAP_WINDOW_SIZE bytes (R27) */
+    uint32_t window_write;
+    uint32_t window_read;
+    uint32_t window_valid;    /* how far back the window can be re-read (R26) */
+    uint32_t input_pos;
+    uint32_t input_len;
+    bartap_err_t status;      /* sticky once finished or failed */
+    bartap_inflate_t inflate;
+    uint8_t input[BARTAP_INPUT_BUF];
+} bartap_stream_t;
+
+/* Raw when raw is non-NULL, otherwise every walk reads the card; never partial (R24). */
+typedef struct {
+    const bartap_source_t *source;
+    const uint8_t *raw;
+    uint32_t offset;
+    uint32_t size;
+    uint32_t count;
+} bartap_directory_t;
+
+/* A spine slot in the caller's array (R22, R41). */
+typedef struct {
+    uint32_t path_hash; /* holds the idref hash until OPF pass 2 */
+    uint32_t dir_offset;
+    uint32_t local_offset;
+    uint32_t compressed_size;
+    uint32_t uncompressed_size;
+    uint32_t crc32;
+    uint16_t path_len;
+    uint8_t method;
+    uint8_t flags;
+} bartap_spine_item_t;
+
+typedef struct {
+    bartap_stream_t stream;
+} bartap_resource_t;
+
+/* Incremental, and never moves a reader's position (R31, R38). */
+typedef struct {
+    bartap_stream_t stream;
+} bartap_verify_t;
+
+/* -- Layer 2: tokenizer and package (epub.c) -- */
+
+struct bartap_rolling;
+
+/* What the tokenizer reads from: an entry stream or a block of memory (R15). */
+typedef struct {
+    bartap_stream_t *stream;       /* NULL in memory mode */
+    const uint8_t *memory;
+    uint32_t memory_size;
+    struct bartap_rolling *rolling; /* ring tap, or NULL (R48) */
+    uint32_t position;
+} bartap_bytes_t;
+
+#define BARTAP_XML_NAME_MAX 32u  /* longer names cannot match a known element */
+#define BARTAP_XML_ATTRS_MAX 16u /* attributes kept per tag, in BARTAP_ATTR_MAX bytes */
+
+typedef struct {
+    uint16_t name_offset;
+    uint16_t name_len;
+    uint16_t value_offset;
+    uint16_t value_len;
+} bartap_xml_attr_t;
+
+typedef enum {
+    BARTAP_XML_TEXT = 1, /* read the decoded bytes with bt_xml_text */
+    BARTAP_XML_START_TAG,
+    BARTAP_XML_END_TAG
+} bartap_xml_token_kind_t;
+
+typedef struct {
+    bartap_xml_token_kind_t kind;
+    uint32_t offset;      /* source offset of the token's first byte */
+    uint32_t end_offset;  /* first byte past it; text tokens only know this once read */
+    uint8_t self_closing;
+    uint8_t name_len;
+    char name[BARTAP_XML_NAME_MAX]; /* local name, ASCII-folded (R46) */
+} bartap_xml_token_t;
+
+/* Tokens must not depend on the read-ahead's size (R33). */
+typedef struct {
+    bartap_bytes_t *bytes;
+    bartap_warnings_t *warnings;
+    uint32_t offset;        /* consumed, excluding read-ahead (R48) */
+    uint32_t readahead_pos;
+    uint32_t readahead_len;
+    uint32_t attr_used;
+    uint32_t attr_count;
+    uint8_t state;
+    bartap_xml_token_t token;
+    bartap_xml_attr_t attrs[BARTAP_XML_ATTRS_MAX];
+    char attr_storage[BARTAP_ATTR_MAX];
+    uint8_t readahead[BARTAP_XML_READAHEAD];
+} bartap_xml_t;
+
+#define BARTAP_NO_DIR_OFFSET 0xFFFFFFFFu
+
+typedef struct {
+    const bartap_source_t *source;
+    bartap_directory_t directory;
+    bartap_spine_item_t *spine;
+    bartap_warnings_t warnings;
+    uint32_t book_hash;     /* of the unique identifier (R12, R25) */
+    uint32_t nav_dir_offset;
+    uint32_t ncx_dir_offset;
+    uint32_t cover_dir_offset;
+    uint16_t spine_capacity;
+    uint16_t spine_count;
+    uint32_t spine_required; /* always reported, even when truncated (R41) */
+    uint8_t title_len;
+    uint8_t creator_len;
+    uint8_t language_len;
+    uint8_t identifier_len;
+    uint8_t creator_count;  /* saturates at 255 (R25) */
+    char title[BARTAP_META_MAX + 1u];
+    char creator[BARTAP_META_MAX + 1u];
+    char language[BARTAP_META_MAX + 1u];
+    char identifier[BARTAP_META_MAX + 1u];
+} bartap_book_t;
+
+/* Opening's parsing state, caller-owned because it is too big for a small stack (R27). */
+typedef struct {
+    bartap_stream_t stream;
+    bartap_bytes_t bytes;
+    bartap_xml_t xml;
+    uint32_t unique_id_hash;
+    uint32_t toc_id_hash;
+    uint32_t cover_id_hash;
+    uint16_t opf_dir_len;
+    char opf_path[BARTAP_PATH_MAX + 1u];
+    char resolved[BARTAP_PATH_MAX + 1u];
+} bartap_open_work_t;
+
+/* What callers read about a book, through bartap_book_metadata. Strings have no terminator and live
+ * as long as the book (R25). */
+typedef struct {
+    const char *title;
+    const char *creator; /* the first dc:creator */
+    const char *language;
+    const char *identifier;
+    uint8_t title_len;
+    uint8_t creator_len;
+    uint8_t language_len;
+    uint8_t identifier_len;
+    uint8_t creator_count;
+} bartap_metadata_t;
+
+/* -- Layer 3: text, TOC, bookmarks, seek (text.c) -- */
+
+/* Tags tracked for ignored-past-depth close tags (R47): every element named in R46. */
+#define BARTAP_TAG_COUNT 54u
+
+typedef struct {
+    uint8_t tag;
+    uint8_t class_kind; /* container, block, inline or boundary */
+    uint8_t level;
+    uint8_t flags;      /* such as a list's reversed */
+    uint32_t style;     /* style to restore when this frame pops */
+    int32_t ordinal;    /* list frames: the next item's number (R45) */
+} bartap_frame_t;
+
+/* All a checkpoint needs to resume parsing (R48). */
+typedef struct {
+    bartap_frame_t frames[BARTAP_DEPTH_MAX];
+    uint8_t ignored[BARTAP_TAG_COUNT]; /* per-tag counts past the depth limit (R47) */
+    uint8_t depth;
+    uint8_t block_live;
+    uint8_t block_has_content;
+    uint8_t space_pending; /* (R4) */
+    uint8_t skip_tag;
+    uint16_t skip_depth;
+    uint32_t style;
+    uint32_t block_offset;
+    uint32_t char_offset;
+} bartap_parse_state_t;
+
+typedef struct {
+    bartap_parse_state_t parse;
+    uint32_t block_offset;  /* the value bookmarks hold */
+    uint32_t resume_offset; /* first byte the snapshot has not consumed (R48) */
+    uint8_t valid;
+} bartap_checkpoint_t;
+
+/* Optional, passed when a text stream is opened. ring NULL with size non-zero is memory mode's
+ * virtual window (R48). */
+typedef struct bartap_rolling {
+    bartap_checkpoint_t checkpoints[2];
+    uint8_t *ring;
+    uint32_t size;
+    uint32_t delivered;      /* total bytes the stream has delivered */
+    uint32_t next_checkpoint;
+} bartap_rolling_t;
+
+/* One spine item from its start to END (R17). */
+typedef struct {
+    const bartap_book_t *book;
+    bartap_rolling_t *rolling;
+    char *text_buf;
+    uint32_t text_cap;
+    bartap_warnings_t warnings;
+    uint32_t high_water;  /* callback stays silent below this during replay (R49) */
+    uint32_t target_block;
+    uint32_t target_char;
+    uint16_t spine_index;
+    uint16_t base_dir_len;
+    uint8_t emit_state;   /* for moments that produce several records (R20) */
+    uint8_t emit_index;
+    uint8_t replaying;
+    bartap_stream_t stream;
+    bartap_bytes_t bytes;
+    bartap_xml_t xml;
+    bartap_parse_state_t parse;
+    char base_dir[BARTAP_PATH_MAX + 1u]; /* for resolving image paths (R22) */
+} bartap_text_t;
+
+/* Same records as text (R26). */
+typedef struct {
+    const bartap_book_t *book;
+    char *text_buf;
+    uint32_t text_cap;
+    bartap_warnings_t warnings;
+    uint32_t label_offset; /* where an NCX label re-read starts (R26) */
+    uint32_t style;
+    uint16_t depth;
+    uint16_t base_dir_len;
+    uint8_t is_ncx;
+    uint8_t emit_state;
+    uint8_t space_pending;
+    bartap_stream_t stream;
+    bartap_bytes_t bytes;
+    bartap_xml_t xml;
+    char base_dir[BARTAP_PATH_MAX + 1u];
+} bartap_toc_t;
+
+/* A bookmark's fields, parsed. The caller stores only the serialized bytes (R1, R12). */
+typedef struct {
+    uint8_t version;
+    uint32_t book_hash;
+    uint16_t spine_index;
+    uint32_t block_offset;
+    uint32_t char_offset;
+    uint32_t chapter_crc32;
+} bartap_bookmark_t;
+
+/* ---- API ---------------------------------------------------------------------------------- */
+
+/* All stubs return BARTAP_ERR_UNSUPPORTED until implemented. */
+
+/* -- Book (R23, R24, R25, R27, R41) -- */
+
+/* dir_buf may be NULL; dir_buf and spine must outlive the book. A window belongs to this call until
+ * it returns; work may be reused afterwards. warn_fn may be NULL. */
+bartap_err_t bartap_open(bartap_book_t *book, const bartap_source_t *source,
+                         bartap_spine_item_t *spine, uint16_t spine_capacity,
+                         uint8_t *dir_buf, uint32_t dir_buf_size,
+                         bartap_open_work_t *work, uint8_t *window,
+                         bartap_warn_fn warn_fn, void *warn_user);
+
+bartap_err_t bartap_book_metadata(const bartap_book_t *book, bartap_metadata_t *out);
+
+/* count is what the array holds; required is what the book needs (R41). */
+bartap_err_t bartap_book_spine_count(const bartap_book_t *book, uint16_t *count, uint32_t *required);
+
+/* Non-linear items are the caller's policy (R17). */
+bartap_err_t bartap_book_spine_linear(const bartap_book_t *book, uint16_t spine_index, bool *linear);
+
+/* Directory-record offset of the cover, for bartap_resource_open_dir. BARTAP_END if none. */
+bartap_err_t bartap_book_cover(const bartap_book_t *book, uint32_t *dir_offset);
+
+/* The sticky warning bits of each kind of object (R32). */
+uint32_t bartap_book_warnings(const bartap_book_t *book);
+uint32_t bartap_text_warnings(const bartap_text_t *text);
+uint32_t bartap_toc_warnings(const bartap_toc_t *toc);
+
+/* -- Resources: one buffer per call (R38) -- */
+
+/* By name, under R43's matching; first in the directory wins (R44). */
+bartap_err_t bartap_resource_open(bartap_resource_t *res, const bartap_book_t *book,
+                                  const char *path, uint32_t path_len, uint8_t *window);
+
+/* From an image record's or the cover's directory-record offset (R9). Untrusted: checked (R29). */
+bartap_err_t bartap_resource_open_dir(bartap_resource_t *res, const bartap_book_t *book,
+                                      uint32_t dir_offset, uint8_t *window);
+
+/* A whole chapter, such as for inflating it into PSRAM for memory mode (R11). */
+bartap_err_t bartap_resource_open_spine(bartap_resource_t *res, const bartap_book_t *book,
+                                        uint16_t spine_index, uint8_t *window);
+
+/* The entry's inflated size, for sizing a destination. */
+uint32_t bartap_resource_size(const bartap_resource_t *res);
+
+/* BARTAP_OK with *got bytes, or BARTAP_END only once CRC and size match (R31). */
+bartap_err_t bartap_resource_read(bartap_resource_t *res, uint8_t *buf, uint32_t cap, uint32_t *got);
+
+/* -- Verify (R31, R38) -- */
+
+bartap_err_t bartap_verify_init(bartap_verify_t *verify, const bartap_book_t *book,
+                                uint16_t spine_index, uint8_t *window);
+
+bartap_err_t bartap_verify_init_dir(bartap_verify_t *verify, const bartap_book_t *book,
+                                    uint32_t dir_offset, uint8_t *window);
+
+/* Inflates up to max_bytes. BARTAP_MORE, BARTAP_OK when the entry checks out, or an error. */
+bartap_err_t bartap_verify_step(bartap_verify_t *verify, uint32_t max_bytes);
+
+/* -- Text (R6, R11, R17, R20) -- */
+
+/* Stream mode. text_cap must be at least BARTAP_TEXT_MIN (R50); rolling and warn_fn may be NULL. */
+bartap_err_t bartap_text_open(bartap_text_t *text, const bartap_book_t *book, uint16_t spine_index,
+                              uint8_t *window, char *text_buf, uint32_t text_cap,
+                              bartap_rolling_t *rolling, bartap_warn_fn warn_fn, void *warn_user);
+
+/* Memory mode: data is the item's already-inflated bytes, and must outlive the text object. */
+bartap_err_t bartap_text_open_memory(bartap_text_t *text, const bartap_book_t *book,
+                                     uint16_t spine_index, const uint8_t *data, uint32_t size,
+                                     char *text_buf, uint32_t text_cap, bartap_rolling_t *rolling,
+                                     bartap_warn_fn warn_fn, void *warn_user);
+
+/* BARTAP_OK with a record, or BARTAP_END when the item is finished. */
+bartap_err_t bartap_text_next(bartap_text_t *text, bartap_record_t *rec);
+
+/* Applies R12's checks 2 to 4 for an item already opened; check spine_index with
+ * bartap_bookmark_read first. The next records are as R49 describes. */
+bartap_err_t bartap_text_seek(bartap_text_t *text, const bartap_bookmark_t *bookmark);
+
+/* -- Rolling buffer (R48) -- */
+
+/* ring NULL with size non-zero is memory mode's virtual window. */
+bartap_err_t bartap_rolling_init(bartap_rolling_t *rolling, uint8_t *ring, uint32_t size);
+
+/* -- Bookmarks (R12, R19) -- */
+
+/* Serializes byte by byte into out, BARTAP_BOOKMARK_SIZE bytes. */
+bartap_err_t bartap_bookmark_write(const bartap_book_t *book, uint16_t spine_index,
+                                   uint32_t block_offset, uint32_t char_offset, uint8_t *out);
+
+/* Untrusted input (R29). BARTAP_ERR_CORRUPT on a failed bookmark CRC-32 or a spine index out of
+ * range, BARTAP_ERR_WRONG_BOOK on a differing book hash. */
+bartap_err_t bartap_bookmark_read(const bartap_book_t *book, const uint8_t *in,
+                                  bartap_bookmark_t *out);
+
+/* -- TOC (R13, R26) -- */
+
+/* BARTAP_END if the book has neither nav nor NCX. text_cap as for bartap_text_open. */
+bartap_err_t bartap_toc_open(bartap_toc_t *toc, const bartap_book_t *book, uint8_t *window,
+                             char *text_buf, uint32_t text_cap, bartap_warn_fn warn_fn,
+                             void *warn_user);
+
+/* BARTAP_OK with a record, or BARTAP_END. A record's fragment is valid until the next call. */
+bartap_err_t bartap_toc_next(bartap_toc_t *toc, bartap_record_t *rec);
+
+/* Streams an opened text object from its start to the element with this id, and fills out for
+ * bartap_text_seek. An id not found gives the chapter start, with a warning (R13). */
+bartap_err_t bartap_toc_resolve(bartap_text_t *text, const char *id, uint32_t id_len,
+                                bartap_bookmark_t *out);
 
 #ifdef __cplusplus
 }

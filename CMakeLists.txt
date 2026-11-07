@@ -1,6 +1,11 @@
 cmake_minimum_required(VERSION 3.21)
 project(bartap LANGUAGES C)
 
+# For clangd, which finds build/compile_commands.json by itself.
+if(PROJECT_IS_TOP_LEVEL)
+    set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+endif()
+
 option(BARTAP_BUILD_TESTS "Build Bartap's host tests" ${PROJECT_IS_TOP_LEVEL})
 option(BARTAP_SANITIZE "Build with ASan and UBSan" OFF)
 
@@ -17,7 +22,7 @@ set(BARTAP_WARNING_FLAGS
     $<$<C_COMPILER_ID:GNU,Clang>:-Wall;-Wextra;-Wconversion;-pedantic>
     $<$<AND:$<BOOL:${PROJECT_IS_TOP_LEVEL}>,$<C_COMPILER_ID:GNU,Clang>>:-Werror>)
 
-add_library(bartap STATIC src/ocf.c)
+add_library(bartap STATIC src/ocf.c src/epub.c src/text.c)
 target_include_directories(bartap PUBLIC include PRIVATE src)
 target_compile_definitions(bartap PUBLIC
     BARTAP_INPUT_BUF=${BARTAP_INPUT_BUF}

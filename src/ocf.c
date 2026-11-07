@@ -136,3 +136,214 @@ uint32_t bt_crc32(uint32_t crc, const uint8_t *data, size_t len)
     }
     return ~crc;
 }
+
+/* ---- Everything below is a stub ---- */
+
+uint16_t bt_get_le16(const uint8_t *p)
+{
+    (void)p;
+    return 0;
+}
+
+uint32_t bt_get_le32(const uint8_t *p)
+{
+    (void)p;
+    return 0;
+}
+
+void bt_put_le16(uint8_t *p, uint16_t value)
+{
+    (void)p;
+    (void)value;
+}
+
+void bt_put_le32(uint8_t *p, uint32_t value)
+{
+    (void)p;
+    (void)value;
+}
+
+/* ---- Inflate (R39) ---- */
+
+void bt_inflate_reset(bartap_inflate_t *inflate)
+{
+    (void)inflate;
+}
+
+bartap_err_t bt_inflate_fill(bartap_stream_t *stream)
+{
+    (void)stream;
+    return BARTAP_ERR_UNSUPPORTED;
+}
+
+/* ---- Central directory (R22, R24, R40, R43, R44) ---- */
+
+bartap_err_t bt_dir_init(bartap_directory_t *dir, const bartap_source_t *source, uint8_t *buf,
+                         uint32_t buf_size)
+{
+    (void)dir;
+    (void)source;
+    (void)buf;
+    (void)buf_size;
+    return BARTAP_ERR_UNSUPPORTED;
+}
+
+void bt_dir_begin(const bartap_directory_t *dir, bt_dir_cursor_t *cursor)
+{
+    (void)dir;
+    (void)cursor;
+}
+
+bartap_err_t bt_dir_next(const bartap_directory_t *dir, bt_dir_cursor_t *cursor,
+                         bartap_entry_t *entry, uint32_t *name_hash, uint16_t *name_len)
+{
+    (void)dir;
+    (void)cursor;
+    (void)entry;
+    (void)name_hash;
+    (void)name_len;
+    return BARTAP_ERR_UNSUPPORTED;
+}
+
+bartap_err_t bt_dir_entry(const bartap_directory_t *dir, uint32_t dir_offset, bartap_entry_t *entry)
+{
+    (void)dir;
+    (void)dir_offset;
+    (void)entry;
+    return BARTAP_ERR_UNSUPPORTED;
+}
+
+bartap_err_t bt_dir_name(const bartap_directory_t *dir, uint32_t dir_offset, char *buf, uint32_t cap,
+                         uint16_t *len)
+{
+    (void)dir;
+    (void)dir_offset;
+    (void)buf;
+    (void)cap;
+    (void)len;
+    return BARTAP_ERR_UNSUPPORTED;
+}
+
+bartap_err_t bt_dir_find(const bartap_directory_t *dir, const char *name, uint16_t name_len,
+                         bartap_entry_t *entry)
+{
+    (void)dir;
+    (void)name;
+    (void)name_len;
+    (void)entry;
+    return BARTAP_ERR_UNSUPPORTED;
+}
+
+/* ---- Entry streams (R31) ---- */
+
+bartap_err_t bt_stream_open(bartap_stream_t *stream, const bartap_source_t *source,
+                            const bartap_entry_t *entry, uint8_t *window)
+{
+    (void)stream;
+    (void)source;
+    (void)entry;
+    (void)window;
+    return BARTAP_ERR_UNSUPPORTED;
+}
+
+bartap_err_t bt_stream_read(bartap_stream_t *stream, uint8_t *buf, uint32_t cap, uint32_t *got)
+{
+    (void)stream;
+    (void)buf;
+    (void)cap;
+    (void)got;
+    return BARTAP_ERR_UNSUPPORTED;
+}
+
+bartap_err_t bt_stream_rewind(bartap_stream_t *stream)
+{
+    (void)stream;
+    return BARTAP_ERR_UNSUPPORTED;
+}
+
+bartap_err_t bt_stream_reread(const bartap_stream_t *stream, uint32_t offset, uint8_t *buf,
+                              uint32_t len)
+{
+    (void)stream;
+    (void)offset;
+    (void)buf;
+    (void)len;
+    return BARTAP_ERR_UNSUPPORTED;
+}
+
+/* ---- Verify (R31, R38) ---- */
+
+bartap_err_t bartap_verify_init(bartap_verify_t *verify, const bartap_book_t *book,
+                                uint16_t spine_index, uint8_t *window)
+{
+    (void)verify;
+    (void)book;
+    (void)spine_index;
+    (void)window;
+    return BARTAP_ERR_UNSUPPORTED;
+}
+
+bartap_err_t bartap_verify_init_dir(bartap_verify_t *verify, const bartap_book_t *book,
+                                    uint32_t dir_offset, uint8_t *window)
+{
+    (void)verify;
+    (void)book;
+    (void)dir_offset;
+    (void)window;
+    return BARTAP_ERR_UNSUPPORTED;
+}
+
+bartap_err_t bartap_verify_step(bartap_verify_t *verify, uint32_t max_bytes)
+{
+    (void)verify;
+    (void)max_bytes;
+    return BARTAP_ERR_UNSUPPORTED;
+}
+
+/* ---- Resources (R38) ---- */
+
+bartap_err_t bartap_resource_open(bartap_resource_t *res, const bartap_book_t *book,
+                                  const char *path, uint32_t path_len, uint8_t *window)
+{
+    (void)res;
+    (void)book;
+    (void)path;
+    (void)path_len;
+    (void)window;
+    return BARTAP_ERR_UNSUPPORTED;
+}
+
+bartap_err_t bartap_resource_open_dir(bartap_resource_t *res, const bartap_book_t *book,
+                                      uint32_t dir_offset, uint8_t *window)
+{
+    (void)res;
+    (void)book;
+    (void)dir_offset;
+    (void)window;
+    return BARTAP_ERR_UNSUPPORTED;
+}
+
+bartap_err_t bartap_resource_open_spine(bartap_resource_t *res, const bartap_book_t *book,
+                                        uint16_t spine_index, uint8_t *window)
+{
+    (void)res;
+    (void)book;
+    (void)spine_index;
+    (void)window;
+    return BARTAP_ERR_UNSUPPORTED;
+}
+
+uint32_t bartap_resource_size(const bartap_resource_t *res)
+{
+    (void)res;
+    return 0;
+}
+
+bartap_err_t bartap_resource_read(bartap_resource_t *res, uint8_t *buf, uint32_t cap, uint32_t *got)
+{
+    (void)res;
+    (void)buf;
+    (void)cap;
+    (void)got;
+    return BARTAP_ERR_UNSUPPORTED;
+}
