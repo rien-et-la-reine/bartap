@@ -22,7 +22,7 @@ set(BARTAP_WARNING_FLAGS
     $<$<C_COMPILER_ID:GNU,Clang>:-Wall;-Wextra;-Wconversion;-pedantic>
     $<$<AND:$<BOOL:${PROJECT_IS_TOP_LEVEL}>,$<C_COMPILER_ID:GNU,Clang>>:-Werror>)
 
-add_library(bartap STATIC src/ocf.c src/epub.c src/text.c)
+add_library(bartap STATIC src/zip.c src/xml.c src/package.c src/text.c)
 target_include_directories(bartap PUBLIC include PRIVATE src)
 target_compile_definitions(bartap PUBLIC
     BARTAP_INPUT_BUF=${BARTAP_INPUT_BUF}

@@ -1,10 +1,10 @@
-/* Interfaces between Bartap's layers: text -> epub -> ocf (R3). Not part of the public API. */
+/* Interfaces between Bartap's layers: text -> package, xml -> zip (R3). Not public API. */
 #ifndef BARTAP_INTERNAL_H
 #define BARTAP_INTERNAL_H
 
 #include "bartap.h"
 
-/* ---- ocf.c ---- */
+/* ---- zip.c ---- */
 
 /* zlib convention: start from 0, and feed the previous result back in to continue. */
 uint32_t bt_crc32(uint32_t crc, const uint8_t *data, size_t len);
@@ -76,7 +76,7 @@ bartap_err_t bt_stream_rewind(bartap_stream_t *stream);
 bartap_err_t bt_stream_reread(const bartap_stream_t *stream, uint32_t offset, uint8_t *buf,
                               uint32_t len);
 
-/* ---- epub.c ---- */
+/* ---- xml.c ---- */
 
 /* Byte source (R15). */
 void bt_bytes_init_stream(bartap_bytes_t *bytes, bartap_stream_t *stream, bartap_rolling_t *rolling);
@@ -109,6 +109,8 @@ uint32_t bt_utf8_decode(const uint8_t *p, uint32_t len, char *out, uint32_t *out
 
 /* Decodes the entity after an `&`, including character references (R30). Returns bytes written. */
 uint32_t bt_entity_decode(const char *name, uint32_t name_len, char *out);
+
+/* ---- package.c ---- */
 
 /* Joins href to base, percent-decoding once and refusing %2F (R43). */
 bartap_err_t bt_href_resolve(const char *base, uint32_t base_len, const char *href, uint32_t href_len,

@@ -679,9 +679,10 @@ with its tests passing under ASan and UBSan and any fuzz target it calls for add
 ```
 include/bartap.h  public API, every state struct in full (R28), build-time limits (R33)
 src/internal.h    interfaces between layers, including the tokenizer's (R15)
-src/ocf.c         layer 1 (R3 zip): CRC-32, name hash, inflate, directory, entry streams, verify; no XML
-src/epub.c        layer 2 (R3 OCF/package): tokenizer, UTF-8/CP1252, container.xml, OPF, spine,
-                  metadata, href resolver, bartap_open
+src/zip.c         layer 1 (R3 zip): CRC-32, name hash, inflate, directory, entry streams, verify; no XML
+src/xml.c         layer 2 (R3 OCF/package): byte source, UTF-8/CP1252, entities, tokenizer
+src/package.c     layer 2 (R3 OCF/package): container.xml, OPF, spine, metadata, href resolver,
+                  bartap_open
 src/text.c        layer 3 (R3 text): text records, TOC iterator, bookmarks, seek, rolling buffer
 tests/            fixtures/gen.py, dump.c, unit/, diff/, prop/, fuzz/, corpus/fetch.py
 ```

@@ -1,5 +1,5 @@
-/* Layer 3 (R3): records, TOC, bookmarks, seek. Depends only on epub.c and ocf.c. Everything here is
- * a stub. */
+/* Layer 3 (R3): records, TOC, bookmarks, seek. Depends only on package.c, xml.c and zip.c.
+ * Everything here is a stub. */
 #include "internal.h"
 
 /* ---- Element classes and records (R4, R6, R45, R46, R47) ---- */
