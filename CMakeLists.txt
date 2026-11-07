@@ -1,42 +1,32 @@
-add_library( bartap
-    bartap.c
-    )
+cmake_minimum_required(VERSION 3.21)
+project(bartap LANGUAGES C)
 
-# Initialise pico_sdk from installed location
-# (note this can come from environment, CMake cache etc)
+option(BARTAP_BUILD_TESTS "Build Bartap's host tests" ${PROJECT_IS_TOP_LEVEL})
+option(BARTAP_SANITIZE "Build with ASan and UBSan" OFF)
 
-# == DO NOT EDIT THE FOLLOWING LINES for the Raspberry Pi Pico VS Code Extension to work ==
-if(WIN32)
-    set(USERHOME $ENV{USERPROFILE})
-else()
-    set(USERHOME $ENV{HOME})
+# Output-neutral limits (R33). PUBLIC below, so the library and its callers always agree.
+set(BARTAP_INPUT_BUF 512 CACHE STRING "Compressed bytes read per inflate refill")
+set(BARTAP_XML_READAHEAD 256 CACHE STRING "XML tokenizer lookahead")
+
+if(BARTAP_SANITIZE)
+    add_compile_options(-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=address,undefined)
 endif()
-set(sdkVersion 2.2.0)
-set(toolchainVersion 14_2_Rel1)
-set(picotoolVersion 2.2.0-a4)
-set(picoVscode ${USERHOME}/.pico-sdk/cmake/pico-vscode.cmake)
-if (EXISTS ${picoVscode})
-    include(${picoVscode})
+
+set(BARTAP_WARNING_FLAGS
+    $<$<C_COMPILER_ID:GNU,Clang>:-Wall;-Wextra;-Wconversion;-pedantic>
+    $<$<AND:$<BOOL:${PROJECT_IS_TOP_LEVEL}>,$<C_COMPILER_ID:GNU,Clang>>:-Werror>)
+
+add_library(bartap STATIC src/ocf.c)
+target_include_directories(bartap PUBLIC include PRIVATE src)
+target_compile_definitions(bartap PUBLIC
+    BARTAP_INPUT_BUF=${BARTAP_INPUT_BUF}
+    BARTAP_XML_READAHEAD=${BARTAP_XML_READAHEAD})
+target_compile_features(bartap PUBLIC c_std_11)
+target_compile_options(bartap PRIVATE ${BARTAP_WARNING_FLAGS})
+set_target_properties(bartap PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+
+if(BARTAP_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
 endif()
-# ====================================================================================
-set(PICO_BOARD pico2 CACHE STRING "Board type")
-
-# Pull in Raspberry Pi Pico SDK (must be before project)
-include(pico_sdk_import.cmake)
-
-project(bartap C CXX ASM)
-
-pico_sdk_init()
-
-# Add FatFs
-add_subdirectory(ff16/source)
-
-target_link_libraries(bartap
-    pico_stdlib
-    hardware_spi
-    hardware_pio
-    hardware_dma
-    ff16
-)
-
-target_include_directories(bartap PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")

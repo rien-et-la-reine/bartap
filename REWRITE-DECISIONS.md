@@ -1,7 +1,7 @@
 # Bartap rewrite — decisions
 
-Decisions for the manual rewrite of Bartap, settled 2026-11-04 and revised 2026-11-05 (one record
-per call, R20). The pre-rewrite code is `bartap` at
+Decisions for the manual rewrite of Bartap, settled 2026-11-04, revised 2026-11-05 (one record
+per call, R20) and amended 2026-11-07 (implementation planning). The pre-rewrite code is `bartap` at
 `ccdc61d`; its D1–D22 (`lib/bartap/DECISIONS.md`) are all open to reconsideration except R1.
 
 ## R1 — Fixed constraints
@@ -14,7 +14,8 @@ per call, R20). The pre-rewrite code is `bartap` at
 
 - The manual rewrite is the next step. The stream-mode seek buffer (old D16's tail buffer, now R48's rolling buffer) is implemented as part of the
   rewrite, against the updated contract, rather than retrofitted onto the old code.
-- Bartap is split into its own repository after the rewrite.
+- Bartap lives in its own repository, this one, which holds the library and its host tests only. The
+  SD driver and FatFs belong to Tavernkeep, which imports Bartap (R51).
 
 ## R3 — Three layers
 
@@ -29,6 +30,8 @@ per call, R20). The pre-rewrite code is `bartap` at
 - Collapsing state carries across style records: in `a <i> b</i>` the two spaces collapse to one, so
   the italic text arrives as "b", not " b". This is what makes "no space at the join" (R6)
   trustworthy.
+- A collapsed space is held pending. It is flushed before a style record or the next non-space
+  character, and dropped at any structural record (R6), so blocks have no trailing spaces.
 
 ## R5 — Images
 
@@ -79,6 +82,8 @@ path. (Revised from the local header offset to follow R22.)
   draws the image. A caller reading heavily illustrated books can avoid that by passing a buffer.
 - Opening the image later starts from the directory record, the source of truth for its sizes,
   CRC-32 and local header offset.
+- An image that cannot be resolved (entry missing, `data:` or remote URL) produces no record and a
+  warning. An image outside any block opens an implicit paragraph.
 
 ## R10 — Bookmarks count text bytes only
 
@@ -96,23 +101,34 @@ Character offsets in bookmarks count the bytes of text records only, never other
 ## R12 — Bookmark contents
 
 - Fields, serialized one by one (never a struct dump), 23 bytes:
-  - version, 1 byte: covers the byte layout **and the text layer's behaviour**. Any change that can
-    alter text output or block boundaries (whitespace rules R4, control characters R21, element
-    classes R46, recovery R47, depth R33) bumps it, even if no field changes.
+  - version, 1 byte: covers **the text layer's behaviour**. Any change that can alter text output or
+    block boundaries (whitespace rules R4, control characters R21, element classes R46, recovery R47,
+    depth R33, named entities R30) bumps it, even if no field changes.
   - book hash, 4 bytes: hash of the book's unique identifier (R25), using Bartap's name hash.
   - spine index, 2 bytes
   - block offset, 4 bytes: raw XHTML offset where the block starts
   - character offset, 4 bytes: text bytes into the block (R10); 4 bytes because a
     single block can exceed 64 KiB
   - chapter CRC-32, 4 bytes, taken from the central directory
+  - bookmark CRC-32, 4 bytes: CRC-32 of the preceding 19 bytes
+- Field offsets, the length and the position of the bookmark CRC-32 are frozen, so a bookmark of any
+  version can be read. A true layout change would need new code to refuse old layouts.
 - Resolving a bookmark, each check falling back one level:
+  0. Bookmark CRC-32 differs: no field can be trusted, not even the spine index, so there is no
+     chapter to fall back to. Refused with `BARTAP_ERR_CORRUPT`; the caller decides what to open instead.
   1. Book hash differs: the bookmark belongs to another book and is refused with an error; the
      caller decides what to open instead.
   2. Chapter CRC-32 differs: the chapter changed; land at the start of that chapter.
   3. Version differs (book and chapter unchanged): the character offset is not meaningful under
      the current rules, but the block offset is a raw position in the book's bytes. Land at the
      start of the block containing that offset.
-  4. All match: exact landing at block offset and character offset.
+  4. All match: exact landing at block offset and character offset. A block offset that is not a
+     block start, or a character offset past the block's end or inside a UTF-8 sequence, is invalid
+     and lands at the chapter start (R29).
+- A valid bookmark whose spine index is out of range, including a chapter lost to spine truncation
+  (R41), has no chapter to land in and is refused with `BARTAP_ERR_CORRUPT`.
+- Check 3 finds its block in two passes: find the last block start at or before the offset, then
+  replay to it. This needs no extra memory, and the path is rare.
 - The book hash uses the unique identifier rather than file bytes, so a bookmark survives the EPUB
   being renamed, moved or repacked; content changes are caught by the chapter CRC-32 instead.
 - Rejected: anchoring the character position in raw bytes (exact across Bartap versions, but every
@@ -128,7 +144,7 @@ Character offsets in bookmarks count the bytes of text records only, never other
   element, plus the character offset of the element within that block's text. Following a TOC entry
   then uses the same seek as a bookmark.
 - An `id` not found in the chapter lands at the chapter start, the same fallback as R12, and raises
-  a warning so the caller can log the broken link. The warning format is not settled (see Open).
+  a warning (R32) so the caller can log the broken link.
 
 ## R14 — Pull, not push
 
@@ -153,6 +169,8 @@ Character offsets in bookmarks count the bytes of text records only, never other
 - A block begins with a block-start record: kind, level (headings), source location (spine index and
   block offset) and starting character offset. The starting character offset is 0, except for the
   first block after a seek that lands inside a block (R49).
+- The block offset of a block with no start tag (an implicit paragraph, or a restart under R46) is the
+  offset of the token that triggered it: the first non-whitespace text byte, or the `<` of an image.
 
 ## R17 — A text stream covers one spine item
 
@@ -255,12 +273,21 @@ Character offsets in bookmarks count the bytes of text records only, never other
   fragment `id` as a pointer and length valid until the next call; it points into the tokenizer's
   bounded attribute storage, R33, so it needs no extra memory). Its label follows as style and text
   records. Labels are not truncated: a long label is several text records (R6).
+- NCX places `<navLabel>` before `<content src>`, the reverse of this order. On a `navPoint`, the
+  iterator notes the label's offset, scans to `content`, returns the entry, then re-reads the label
+  from the inflate window: at most 32 KiB back, with no card reads and no second CRC fold. A longer
+  label rewinds the entry from its start, which is correct but slow. A `navPoint` rewinds at most once,
+  so the loop stays bounded (R29).
+- An entry whose target cannot be resolved is still returned, with spine index `BARTAP_NO_SPINE` and a
+  warning. Only `nav` with `toc` among its `epub:type` tokens is read.
 
 ## R27 — Every inflating call takes its window explicitly
 
 - `bartap_open` takes the 32 KiB inflate window as its own argument, separate from its work struct,
   like every other call that inflates. The work struct holds only opening's parsing state (about
   5 KB, still too big for a small stack, so still caller-owned).
+- The window is always required, even for stored entries, so a caller's memory budget does not depend
+  on a book's contents.
 - Rule: a window belongs to the object it was passed to until the caller is done with that object.
   Sharing one window between opening and reading is visible at the caller's call sites.
 - Rationale: the window is the one buffer callers most want to place deliberately (fast SRAM); old
@@ -284,8 +311,9 @@ Character offsets in bookmarks count the bytes of text records only, never other
 - This covers the values the new design later dereferences: directory-record offsets (R9, R22) and
   the directory buffer (R24).
 - A bookmark passed back by the caller (R12) is untrusted input too: a corrupted or edited bookmark
-  file can hold any value. Seeking range-checks every field and falls back to the chapter start on
-  anything invalid, as on a CRC mismatch.
+  file can hold any value, and a crafted one can carry a valid bookmark CRC-32. Seeking range-checks
+  every field and falls back to the chapter start on anything invalid, as on a chapter CRC mismatch.
+  The exceptions are the cases with no chapter to land in, which R12 refuses with an error.
 
 ## R30 — Lenient only (old D19 kept)
 
@@ -294,6 +322,11 @@ Character offsets in bookmarks count the bytes of text records only, never other
   an error. Invalid UTF-8 is read as Windows-1252. The R29 safety checks always apply.
 - No strict mode: validation is a different tool (EPUBCheck). A caller wanting strictness rejects
   books on warnings.
+- Named entities: XML's five plus a fixed table of common XHTML ones (`nbsp`, `mdash`, `hellip`,
+  quotes and the like). Unknown ones pass through literally, with a warning. Changing the table bumps
+  the bookmark version (R12).
+- A UTF-8 BOM is skipped. XML encoding declarations are ignored, since the Windows-1252 fallback
+  covers Latin-1. A document with a UTF-16 BOM cannot be read: that item returns `ERR_UNSUPPORTED`.
 - R13 (unresolved TOC links) and R21 (dropped control characters) follow this stance.
 
 ## R31 — CRC-32 checks, plus a verify call (old D22 kept)
@@ -376,9 +409,10 @@ Character offsets in bookmarks count the bytes of text records only, never other
   - raw and no directory buffer give identical results (R24);
   - a bookmark round trip lands on the same block and character offset (R12);
   - XML read-ahead and compressed-input sizes do not change the output (R33);
-  - a corrupted bookmark lands at the chapter start, never out of bounds (R29).
-  - each bookmark fallback level (R12) is taken exactly when its check fails: wrong book is refused,
-    changed chapter lands at its start, other version lands at the block start.
+  - a corrupted bookmark is refused or lands at the chapter start, never out of bounds (R29).
+  - each bookmark fallback level (R12) is taken exactly when its check fails: failed bookmark CRC-32
+    and wrong book are refused, changed chapter lands at its start, other version lands at the block
+    start.
 - The pre-rewrite code is not used as a reference: it was never validated on hardware, so agreeing
   with it proves little.
 
@@ -442,6 +476,8 @@ Character offsets in bookmarks count the bytes of text records only, never other
 
 - Entry names and resolved hrefs are compared byte for byte with ASCII letters folded to lower
   case, always. All name hashes (spine items, R22's lookups, and any later index) use the same folding.
+- The name hash is 32-bit FNV-1a over the folded bytes, also used for the book hash (R12). It is
+  frozen, because bookmarks store it.
   No case-mismatch warning: it is how lookup works, not a fault.
 - Spec basis: EPUB OCF requires file names in a directory to be unique after Unicode case
   normalization, which implies uniqueness under ASCII-only folding, so a conforming book can never
@@ -475,6 +511,8 @@ Character offsets in bookmarks count the bytes of text records only, never other
   counts and a seek into a list re-emits the right number; it is 0 for other kinds.
 - Lists (`ol`, `ul`) and list items (`li`) are containers, not blocks: one item can hold several
   paragraphs.
+- List counters use saturating arithmetic, since signed overflow is undefined (R29). An `li` numbers
+  from its nearest list frame, and is 0 outside any list.
 - `reversed` without `start` would number the first item with the list's item count, which a
   streaming text layer does not know until the list ends. Such a list counts up from 1 instead, with
   a warning. Rare in books; a pre-scan of the list was rejected as not worth it.
@@ -503,10 +541,30 @@ Character offsets in bookmarks count the bytes of text records only, never other
   `epub:type` for this, within its bounded attribute storage.
 - `ins`/`del` are HTML's inserted/deleted-text markup; they map to underline/strikethrough as
   browsers draw them by default.
+- Tags match on their ASCII-folded local name (`html:p` is `p`). `epub:type` matches per token.
+- Elements not in the table (`span`, `a`, `small`, `svg` and so on) are transparent: their content
+  passes through, with no frame and no warning, and their close tags are ignored silently. Their `id`
+  is still seen for R13.
+- `hr`, `br` and `img` take no frame, whether or not they self-close, so an unclosed one cannot swallow
+  what follows.
+- A boundary or container inside an explicit block ends the output block but keeps its frame, and
+  later content restarts a block of the same kind and level. So `<p>a<div>b</div>c</p>` gives three
+  `p` blocks, words never fuse, and `</p>` matches its frame normally:
+  - New content looks down the frames for the nearest block frame, or opens an implicit paragraph if
+    there is none. The search stops at a container, so content inside one never restarts a block from
+    outside it; the outer kind resumes after the container closes.
+  - A boundary only ends a block that already has content, so `<h2><div>A</div></h2>` is one `h2`.
+  - Inline frames stay on the stack, so style carries across the restart.
+  - A boundary ignored past the depth limit (R47) has no frame, but its open and close tags both still
+    end the live block.
+  - Cost accepted: records do not distinguish a restart from a new paragraph, so layout indents each
+    one if it indents paragraphs.
 
 ## R47 — Recovery from broken markup
 
-1. A block opened while another is open ends the current one (blocks are flat). No warning.
+1. A block opened directly inside a live block pops that block's frame (blocks are flat). No warning.
+   A surplus close tag that results falls under rule 3. A block opened after a boundary has already
+   ended the output block leaves that frame in place (R46).
 2. A close tag matching an open frame further down unwinds to it, closing everything above in order
    (container-end records balanced by construction, R45), with a warning.
 3. A close tag matching nothing open is ignored, with a warning.
@@ -533,12 +591,18 @@ Character offsets in bookmarks count the bytes of text records only, never other
   when a text stream is opened, or NULL; without it a text iterator costs nothing extra (old D16's
   saved state grew every iterator).
 - Memory mode uses the same object with no ring: the chapter's bytes are already in RAM, so
-  checkpoints let a seek skip re-parsing everything before them.
+  checkpoints let a seek skip re-parsing everything before them. A NULL ring pointer with a non-zero
+  size is a virtual window: the same offset logic, with no bytes stored.
+- A seek to a target ahead of the read position continues from the live position. Otherwise it uses
+  the latest usable checkpoint, then the chapter start.
 - Invariants:
   1. Checkpoints are taken only at block starts, just after the start tag: no text run, partial
      entity, partial UTF-8 sequence or CDATA is pending there.
-  2. A checkpoint stores the source offset of that tag, not the tokenizer's read-ahead; restoring
-     resets the read-ahead and resumes at that offset.
+  2. A checkpoint stores two source offsets, not the tokenizer's read-ahead: the block offset (the
+     tag's `<`, the value bookmarks hold) and the resume offset (the first byte the snapshot has not
+     consumed, just past the tag). Restoring resets the read-ahead and resumes at the resume offset,
+     so the tag is not processed twice. For a block with no start tag (R16) the two are equal, and
+     the triggering token is processed after the restore.
   3. After a seek into the ring, reading comes from the ring up to its newest byte, then switches to
      the live stream, which has not moved. Bytes re-read from the ring are never appended to it again.
   4. A seek before both checkpoints rewinds the stream and replays from the chapter start; the ring
@@ -560,6 +624,10 @@ Character offsets in bookmarks count the bytes of text records only, never other
 - The text layer's first records after a seek, or after opening at a bookmark: container starts for
   every container open at the target (R45), a block-start record whose starting character offset is
   the bookmark's (0 when landing at a block start), a style record (R8), then text from the target.
+- Landing at a character offset lands right after that many text bytes (R10), so an image or line
+  break at exactly that position is emitted, and earlier ones are not.
+- Replay copies no text and looks up no images, so a seek past N images does not cost N directory
+  walks (R9). The warning callback (R32) stays silent below the highest offset already delivered.
 - (Superseded: the pitcher-start record with its length and context-reset and chapter-finished
   flags. The next call returning `END` replaces "chapter finished".)
 
@@ -573,7 +641,9 @@ Character offsets in bookmarks count the bytes of text records only, never other
 
 ## R51 — Hardware validation before the rewrite counts as done
 
-On the Pico 2 (SD breakout, output over RTT; no panels needed):
+On the Pico 2 (SD breakout, output over RTT; no panels needed), run from Tavernkeep, which imports
+Bartap and has the working SD driver and FatFs. This repository supplies the canonical serialization
+and the expected host hashes:
 
 - **Correctness:** for every fixture, a hash of all records produced on the device (through the test
   harness's canonical serialization) equals the host suite's hash. Exact match required.
@@ -597,3 +667,95 @@ On the Pico 2 (SD breakout, output over RTT; no panels needed):
 ## Open
 
 (Nothing open.)
+
+## Implementation plan: remaining phases
+
+Phases 0 (reset, these amendments) and 1 (results, warnings, read gate, memory source, CRC-32, name
+hash, records, test-side canonical serialization) are done. Each phase needs its own approval, and ends
+with its tests passing under ASan and UBSan and any fuzz target it calls for added.
+
+### Layout
+
+```
+include/bartap.h  public API, every state struct in full (R28), build-time limits (R33)
+src/internal.h    interfaces between layers, including the tokenizer's (R15)
+src/ocf.c         layer 1 (R3 zip): CRC-32, name hash, inflate, directory, entry streams, verify; no XML
+src/epub.c        layer 2 (R3 OCF/package): tokenizer, UTF-8/CP1252, container.xml, OPF, spine,
+                  metadata, href resolver, bartap_open
+src/text.c        layer 3 (R3 text): text records, TOC iterator, bookmarks, seek, rolling buffer
+tests/            fixtures/gen.py, dump.c, unit/, diff/, prop/, fuzz/, corpus/fetch.py
+```
+
+Each layer depends only on the one below. The TOC iterator sits in `text.c` even though R3 lists
+navigation under the package layer, because R26 has it emit style and text records; the package layer
+still locates the nav and NCX entries.
+
+### Key mechanisms
+
+- **Byte source stack (R14, R15):** tokenizer, then source, then optional ring tap, then entry stream
+  (stored or deflate), then `read()`. Memory mode replaces everything below the source with a pointer
+  and length.
+- **Inflate:** decodes into the caller's window and stops when fewer than 258 bytes of space remain, so
+  a match never suspends. Output beyond the directory's size is corrupt, which bounds zip bombs. `END`
+  requires a CRC and size match (R31), so text streams drain any bytes after `</html>`.
+- **One record per call (R20):** a small emission state machine covers the moments that produce several
+  records: unwinding container ends, block start plus style (R8), and the context after a seek (R49).
+- **Opening (R23, R41):**
+  1. Walk the directory for `container.xml`, then again for the OPF.
+  2. OPF pass 1: metadata, itemref count, idref hashes written into spine slots.
+  3. OPF pass 2: manifest entries replace the idref hashes with resolved path hash and length, and
+     capture nav, NCX and cover. Two passes are needed because the manifest precedes the spine.
+  4. One full directory walk fills the slots. A spine item missing from the archive gets a warning and
+     fails only when opened.
+
+API still to add: `bartap_open`, `bartap_text_open[_memory]`, `bartap_text_next`, `bartap_text_seek`,
+`bartap_toc_open`, `bartap_toc_next`, `bartap_toc_resolve`, `bartap_resource_open[_dir]`,
+`bartap_resource_read`, `bartap_verify_init`, `bartap_verify_step`, `bartap_bookmark_write`,
+`bartap_warnings`, `bartap_rolling_init`.
+
+### Phases
+
+| Phase | Scope | Done when |
+|---|---|---|
+| 2. Inflate and entry streams | Stored and deflate, CRC and size checks, verify's bounded step (R31, R38) | Byte-identical with zlib on generated and fuzzed streams, including every block type and invalid tables |
+| 3. Zip directory | End record search, ZIP64 where it fits (R40), directory cursor in both modes (R24), first match wins and duplicate warning (R44), ASCII-folded matching (R43) | Agrees with Python `zipfile` on fixtures; raw and none give identical results |
+| 4. XML tokenizer | Tags, attributes in 1 KiB storage, entities, CDATA, comments, PI, DOCTYPE, UTF-8 with Windows-1252 fallback (R30), control characters (R21), byte offsets on every token | Tokens do not change across read-ahead sizes (R33); fuzzed standalone |
+| 5. Package | Full `bartap_open`: metadata limits (R25), href resolution with percent-decoding and the `%2F` refusal (R43), spine truncation and required count (R41), resource streams, lenient packaging (R30) | Fixtures for each fault; read counts confirm at most three directory walks |
+| 6. Text, sequential | Element classes (R46), whitespace (R4), records (R6, R7, R8), containers and ordinals (R45), recovery (R47), image lookup (R9), buffer splitting (R50) | Hand-written expected record sequences for every class and recovery rule; identical at every text-buffer size once merged |
+| 7. TOC | Nav and NCX with the label rewind (R26), target resolution, `bartap_toc_resolve` (R13) | NCX and nav versions of a book give identical entries; a long NCX label arrives whole |
+| 8. Bookmarks and seek by full replay | Byte-by-byte serialization (R19), every resolution level (R12), records after a seek, landing and replay rules (R49) | Round trip lands exactly; each fallback triggers only when its own check fails; P2 holds (R48) |
+| 9. Rolling buffer | Ring tap, two checkpoints, all five invariants, virtual window for memory mode (R48) | P1 holds, with zero `read()` calls for seeks served from the ring, asserted by a counting callback |
+| 10. Evidence | Full property matrix over fixtures and corpus, sustained fuzz campaign with findings fixed, big-endian run, symbol check, `sizeof` report, README and API docs | Everything below passes except the R51 row |
+| 11. Hardware handoff (R51) | Run from Tavernkeep. This repository supplies the importable library, the canonical serialization and hash as portable C, the expected host hash per fixture and corpus book, and a `tests/README` listing R51's measurements and targets | R51 passes on the device; the rewrite counts as done only then. Results that change a default or target come back as updates to this document |
+
+### Verification
+
+| Property | How it is checked |
+|---|---|
+| Inflate matches zlib; directory matches `zipfile` (R36) | `tests/diff/`, on fixtures and under fuzzers |
+| Checkpoint seek equals full replay (P1) | Every block as target, across fixtures |
+| Seek output equals a straight read after normalising (P2) | Same, plus random targets |
+| Text-buffer sizes from 4 up give the same merged content (R6, R50) | Every small size, then powers of two |
+| Raw equals no directory buffer (R24, R44) | All fixtures and fuzzers run in both modes |
+| Bookmark round trip and each resolution level (R12) | Single-field and random corruption, exhaustive bit flips |
+| Input-buffer and read-ahead sizes do not change output (R33) | Build `dump` at two sizes of each, compare corpus hashes |
+| Balanced containers on broken markup (R45, R47) | Asserted inside the text fuzz harness |
+| Only `mem*` symbols (R34, R35) | `nm` check, already in place; add an Arm build, where `__aeabi_*` helpers are allowed |
+| No undefined behaviour, correct on big-endian (R19, R29, R34) | ASan and UBSan on every run; full suite under `qemu-user` |
+| Device hash equals host hash, targets met (R51) | Run from Tavernkeep against the hashes this repository publishes |
+
+- **Fuzz targets:** inflate, zip directory, tokenizer, open, text, TOC, seek with arbitrary bookmark
+  bytes.
+- **Fixtures:** `tests/fixtures/gen.py` generates deterministic EPUBs covering each record.
+  `tests/corpus/fetch.py` downloads public-domain books, uncommitted, including R51's Pride and
+  Prejudice, a large single-file book and an image-heavy book.
+- **Tools still to install:** `cmake`, `clang` (libFuzzer), `arm-none-eabi-gcc` and
+  `arm-none-eabi-newlib` (compile, symbol and `sizeof` checks), a big-endian cross-compiler and
+  `qemu-user`. The cross-compiler is not chosen yet.
+
+### Out of scope
+
+- Deferred by these decisions: hashed directory mode (R24), compact spine (R41), fast inflate lookup
+  table (R39), grid containers (R46).
+- Layout and rendering, the SD driver and FatFs, and the Tavernkeep side of R51 (firmware, timings,
+  stack painting).
