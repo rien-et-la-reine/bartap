@@ -144,29 +144,43 @@ uint32_t bt_crc32(uint32_t crc, const uint8_t *data, size_t len)
 // Reads a little-endian 16-bit value from p.
 uint16_t bt_get_le16(const uint8_t *p)
 {
-    (void)p;
-    return 0;
+    //pull byte from p, place it into next available byte of uint16_t.
+    uint16_t value = 0;
+    value |= (uint16_t)p[0]; // least significant byte
+    value |= (uint16_t)p[1] << 8; // most significant byte
+    return value;
 }
 
 // Reads a little-endian 32-bit value from p.
 uint32_t bt_get_le32(const uint8_t *p)
 {
-    (void)p;
-    return 0;
+    //pull byte from p, place it into next available byte of uint32_t.
+    uint32_t value = 0;
+    value |= (uint32_t)p[0]; // least significant byte
+    value |= (uint32_t)p[1] << 8;  
+    value |= (uint32_t)p[2] << 16;
+    value |= (uint32_t)p[3] << 24; // most significant byte
+    return value;
 }
 
 // Writes value to p as little-endian 16 bits.
 void bt_put_le16(uint8_t *p, uint16_t value)
 {
-    (void)p;
-    (void)value;
+    //pull byte from value, place it into next available byte of p.
+    p[0] = (uint8_t)(value & 0xFF); // least significant byte
+    p[1] = (uint8_t)((value >> 8) & 0xFF); // most significant byte
+    return;
 }
 
 // Writes value to p as little-endian 32 bits.
 void bt_put_le32(uint8_t *p, uint32_t value)
 {
-    (void)p;
-    (void)value;
+    //pull byte from value, place it into next available byte of p.
+    p[0] = (uint8_t)(value & 0xFF); // least significant byte
+    p[1] = (uint8_t)((value >> 8) & 0xFF);
+    p[2] = (uint8_t)((value >> 16) & 0xFF);
+    p[3] = (uint8_t)((value >> 24) & 0xFF); // most significant byte
+    return;
 }
 
 /* ---- Inflate (R39) ---- */
