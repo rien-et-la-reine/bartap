@@ -146,7 +146,7 @@ uint32_t bt_crc32(uint32_t crc, const uint8_t *data, size_t len)
 // Reads a little-endian 16-bit value from p.
 uint16_t bt_get_le16(const uint8_t *p)
 {
-    //pull byte from p, place it into next available byte of uint16_t.
+    // pull byte from p, place it into next available byte of uint16_t.
     uint16_t value = 0;
     value |= (uint16_t)p[0]; // least significant byte
     value |= (uint16_t) ((uint16_t)p[1] << 8); // most significant byte, casting after shifting to avoid overflow warning even though no overflow can actually occur
@@ -156,7 +156,7 @@ uint16_t bt_get_le16(const uint8_t *p)
 // Reads a little-endian 32-bit value from p.
 uint32_t bt_get_le32(const uint8_t *p)
 {
-    //pull byte from p, place it into next available byte of uint32_t.
+    // pull byte from p, place it into next available byte of uint32_t.
     uint32_t value = 0;
     value |= (uint32_t)p[0]; // least significant byte
     value |= (uint32_t)p[1] << 8;  
@@ -168,7 +168,7 @@ uint32_t bt_get_le32(const uint8_t *p)
 // Writes value to p as little-endian 16 bits.
 void bt_put_le16(uint8_t *p, uint16_t value)
 {
-    //pull byte from value, place it into next available byte of p.
+    // pull byte from value, place it into next available byte of p.
     p[0] = (uint8_t)(value & 0xFF); // least significant byte
     p[1] = (uint8_t)((value >> 8) & 0xFF); // most significant byte
     return;
@@ -177,7 +177,7 @@ void bt_put_le16(uint8_t *p, uint16_t value)
 // Writes value to p as little-endian 32 bits.
 void bt_put_le32(uint8_t *p, uint32_t value)
 {
-    //pull byte from value, place it into next available byte of p.
+    // pull byte from value, place it into next available byte of p.
     p[0] = (uint8_t)(value & 0xFF); // least significant byte
     p[1] = (uint8_t)((value >> 8) & 0xFF);
     p[2] = (uint8_t)((value >> 16) & 0xFF);
@@ -602,16 +602,229 @@ bartap_err_t bt_inflate_fill(bartap_stream_t *stream)
 
 /* ---- Central directory (R22, R24, R40, R43, R44) ---- */
 
-// 
-// Locates the central directory and chooses raw or card-backed access up front.
+#define BT_END_SIZE 22u
+#define BT_END_SIGNATURE 0x06054B50u
+#define BT_END_COMMENT_MAX 65535u
+#define BT_ZIP64_LOCATOR_SIZE 20u
+#define BT_ZIP64_LOCATOR_SIGNATURE 0x07064B50u
+#define BT_ZIP64_END_SIZE 56u
+#define BT_ZIP64_END_SIGNATURE 0x06064B50u
+#define BT_DIR_RECORD_MIN 46u
+#define BT_END_SCAN_CHUNK 128u
+
+// end record values
+typedef struct {
+    uint32_t count;
+    uint32_t size;
+    uint32_t offset;
+} bt_end_values_t;
+
+// Replaces the values with the ZIP64 record's, if a locator sits before the end record. Without one
+// *found is false and the classic values stand: a file can really have 65,535 entries. *limit
+// becomes where the record starts, since the directory has to end before it.
+static bartap_err_t read_zip64_end(const bartap_source_t *source, uint32_t end_pos,
+                                   bt_end_values_t *values, uint32_t *limit, bool *found)
+{
+    uint8_t locator[BT_ZIP64_LOCATOR_SIZE];
+    uint8_t record[BT_ZIP64_END_SIZE];
+
+    // if no locator, use classic values
+    *found = false;
+    if (end_pos < BT_ZIP64_LOCATOR_SIZE) {
+        return BARTAP_OK;
+    }
+
+    // locator candidate, read it and check
+    uint32_t locator_pos = end_pos - BT_ZIP64_LOCATOR_SIZE;
+    bartap_err_t err = bt_read(source, locator_pos, locator, BT_ZIP64_LOCATOR_SIZE);
+    if (err != BARTAP_OK) {
+        // error reading locator, pass error up
+        return err;
+    }
+    if (bt_get_le32(locator) != BT_ZIP64_LOCATOR_SIGNATURE) {
+        // signature mismatch, not a ZIP64 locator, treat as not present
+        return BARTAP_OK;
+    }
+
+    // locator found
+    *found = true;
+
+    // check locator values are supported
+    if (bt_get_le32(locator + 4) != 0 || bt_get_le32(locator + 16) > 1u ||
+        bt_get_le32(locator + 12) != 0) {
+        return BARTAP_ERR_UNSUPPORTED; // a split archive, or an offset above 32 bits (R40)
+    }
+
+    uint32_t record_pos = bt_get_le32(locator + 8);
+    if (locator_pos < BT_ZIP64_END_SIZE || record_pos > locator_pos - BT_ZIP64_END_SIZE) {
+        // record clips file start or overlaps locator, not possible, corrupt
+        return BARTAP_ERR_CORRUPT;
+    }
+
+    err = bt_read(source, record_pos, record, BT_ZIP64_END_SIZE);
+    if (err != BARTAP_OK) {
+        // error reading record, pass error up
+        return err;
+    }
+
+    if (bt_get_le32(record) != BT_ZIP64_END_SIGNATURE) {
+        // signature mismatch, not a ZIP64 record, corrupt
+        return BARTAP_ERR_CORRUPT;
+    }
+
+    if (bt_get_le32(record + 16) != 0 || bt_get_le32(record + 20) != 0 ||
+        bt_get_le32(record + 36) != 0 || bt_get_le32(record + 44) != 0 ||
+        bt_get_le32(record + 52) != 0) {
+        return BARTAP_ERR_UNSUPPORTED; // a split archive, or a value above 32 bits (R40)
+    }
+
+    // read the candidate values
+    values->count = bt_get_le32(record + 32);
+    values->size = bt_get_le32(record + 40);
+    values->offset = bt_get_le32(record + 48);
+    *limit = record_pos;
+    return BARTAP_OK;
+}
+
+// Evaluates one candidate end record, following ZIP64 and checking the values are possible (R29).
+static bartap_err_t read_end_values(const bartap_source_t *source, uint32_t end_pos,
+                                    const uint8_t *end, bt_end_values_t *values)
+{
+    uint16_t disk = bt_get_le16(end + 4);
+    uint16_t dir_disk = bt_get_le16(end + 6);
+    uint32_t limit = end_pos;
+
+    if ((disk != 0 && disk != 0xFFFFu) || (dir_disk != 0 && dir_disk != 0xFFFFu)) {
+        return BARTAP_ERR_UNSUPPORTED; // a split archive
+    }
+
+    // read candidate values (may be ZIP64 placeholders)
+    values->count = bt_get_le16(end + 10);
+    values->size = bt_get_le32(end + 12);
+    values->offset = bt_get_le32(end + 16);
+
+    // if any are placeholders, read the ZIP64 record and replace them
+    if (disk == 0xFFFFu || dir_disk == 0xFFFFu || values->count == 0xFFFFu ||
+        values->size == UINT32_MAX || values->offset == UINT32_MAX) {
+        bool found;
+        bartap_err_t err = read_zip64_end(source, end_pos, values, &limit, &found);
+        if (err != BARTAP_OK) {
+            return err;
+        }
+        if (!found && (disk != 0 || dir_disk != 0)) {
+            // placeholder with no replacement and non-zero disk number, potentially split
+            return BARTAP_ERR_UNSUPPORTED;
+        }
+    }
+
+    // check if directory fits in the file, and that the count is possible (R29)
+    if (values->offset > limit || values->size > limit - values->offset ||
+        values->count > values->size / BT_DIR_RECORD_MIN) {
+        // values are out of bounds
+        return BARTAP_ERR_CORRUPT;
+    }
+    return BARTAP_OK;
+}
+
+// Scans backwards for the end record. The latest usable one whose comment reaches exactly to the
+// end of the file wins, and failing that the latest usable one, which accepts bytes added after an
+// archive (R30). Comment bytes can look like a record, so a signature alone proves nothing.
+static bartap_err_t find_end_record(const bartap_source_t *source, bt_end_values_t *values)
+{
+    uint8_t chunk[BT_END_SCAN_CHUNK];
+    uint8_t end[BT_END_SIZE];
+    bt_end_values_t candidate;
+    bool have_fallback = false;
+    bool saw_unsupported = false;
+
+    // reject archives smaller than end record size
+    if (source->size < BT_END_SIZE) {
+        return BARTAP_ERR_CORRUPT;
+    }
+    // start at end, search progressively further up for end record. covers for padding and comments
+    uint32_t newest = source->size - BT_END_SIZE;
+    uint32_t oldest = newest < BT_END_COMMENT_MAX ? 0 : newest - BT_END_COMMENT_MAX;
+    uint32_t above = newest + 1u; // candidates at or above this have been checked
+
+    while (above > oldest) {
+        // Chunks overlap by 3 bytes, so no signature is split across two of them.
+        uint32_t span = above - oldest;
+        if (span > BT_END_SCAN_CHUNK - 3u) {
+            span = BT_END_SCAN_CHUNK - 3u;
+        }
+        uint32_t base = above - span;
+        bartap_err_t err = bt_read(source, base, chunk, span + 3u);
+        if (err != BARTAP_OK) {
+            return err;
+        }
+        // scan backwards for the signature, and check each candidate end record
+        for (uint32_t i = span; i-- != 0;) {
+            if (bt_get_le32(chunk + i) != BT_END_SIGNATURE) {
+                continue;
+            }
+            uint32_t pos = base + i;
+            err = bt_read(source, pos, end, BT_END_SIZE);
+            if (err == BARTAP_OK) {
+                // read candidate end record
+                err = read_end_values(source, pos, end, &candidate);
+            }
+            if (err == BARTAP_ERR_UNSUPPORTED) {
+                // unsupported features, not fallback candidate
+                saw_unsupported = true;
+            } else if (err == BARTAP_OK) {
+                // found valid end record
+                // check if it reached end of file
+                if (BT_END_SIZE + (uint32_t)bt_get_le16(end + 20) == source->size - pos) {
+                    // reached end of file, valid and conformant end record
+                    *values = candidate;
+                    return BARTAP_OK;
+                }
+                // didn't reach end, fallback candidate (latest one in the file)
+                if (!have_fallback) {
+                    *values = candidate;
+                    have_fallback = true;
+                }
+            } else if (err != BARTAP_ERR_CORRUPT) {
+                return err;
+            }
+        }
+        above = base;
+    }
+
+    if (have_fallback) {
+        return BARTAP_OK;
+    }
+    return saw_unsupported ? BARTAP_ERR_UNSUPPORTED : BARTAP_ERR_CORRUPT;
+}
+
+// Locates the central directory and chooses raw or card-backed access up front. dir is only written
+// on success.
 bartap_err_t bt_dir_init(bartap_directory_t *dir, const bartap_source_t *source, uint8_t *buf,
                          uint32_t buf_size)
 {
-    (void)dir;
-    (void)source;
-    (void)buf;
-    (void)buf_size;
-    return BARTAP_ERR_UNSUPPORTED;
+    bt_end_values_t values;
+    const uint8_t *raw = NULL;
+
+    bartap_err_t err = find_end_record(source, &values);
+    if (err != BARTAP_OK) {
+        return err;
+    }
+
+    // A directory that does not fit is never partly buffered (R24).
+    if (buf != NULL && values.size <= buf_size) {
+        err = bt_read(source, values.offset, buf, values.size);
+        if (err != BARTAP_OK) {
+            return err;
+        }
+        raw = buf;
+    }
+
+    dir->source = source;
+    dir->raw = raw;
+    dir->offset = values.offset;
+    dir->size = values.size;
+    dir->count = values.count;
+    return BARTAP_OK;
 }
 
 // Points a cursor at the directory's first record.

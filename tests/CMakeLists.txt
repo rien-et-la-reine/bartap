@@ -20,6 +20,7 @@ if(NOT ZLIB_FOUND)
 endif()
 bartap_add_test(test_crc_zlib diff/test_crc_zlib.c ZLIB::ZLIB)
 bartap_add_test(test_stream unit/test_stream.c)
+bartap_add_test(test_directory unit/test_directory.c)
 bartap_add_test(test_inflate_zlib diff/test_inflate_zlib.c ZLIB::ZLIB)
 
 # The compressed-input size must not change the output (R33). One byte puts a refill at every
