@@ -3,8 +3,9 @@
 A zero-heap, zero-dependency EPUB reading library in ISO C11, for microcontrollers. The caller owns all
 memory and pulls content one record at a time.
 
-**Status:** the library is complete and tested on the host. Fixtures, a real-book corpus, big-endian
-and Arm checks, and the on-device measurements (R51) are still to come. `REWRITE-DECISIONS.md` is the
+**Status:** the library is complete. It is tested on the host over generated fixtures, built and sized
+for the Arm Cortex-M33, and run big-endian under QEMU. A real-book corpus and the on-device
+measurements (R51) are still to come. `REWRITE-DECISIONS.md` is the
 authoritative design; decisions are cited below as R-numbers.
 
 ## What it does
@@ -92,8 +93,16 @@ cmake -B build-fuzz -DBARTAP_FUZZ=ON -DCMAKE_C_COMPILER=clang && cmake --build b
 ```
 
 The tests need Python 3 and zlib. The fuzz build produces libFuzzer targets, with ASan and UBSan, in
-`build-fuzz/tests/` (`fuzz_xml`, `fuzz_xml_readahead1`, `fuzz_open`, `fuzz_text`). Every build also
-runs the same targets as standalone replays over generated inputs.
+`build-fuzz/tests/` (`fuzz_xml`, `fuzz_xml_readahead1`, `fuzz_open`, `fuzz_text`, `fuzz_toc`,
+`fuzz_bookmark`). Every build also runs the same targets as standalone replays over generated inputs.
+
+- **Fixtures:** `tests/fixtures/gen.py` builds deterministic EPUBs into the build tree. Each one's
+  dump must match `tests/fixtures/expected.txt`. After an intended change in output, refresh that
+  file with `tests/fixtures/check.py --update`.
+- **Cross checks:** with `arm-none-eabi-gcc`, the `arm_cortex_m33` test checks symbols and reports
+  `sizeof`, code size and stack frames (`ctest -R arm_cortex_m33 -V`). With `qemu-armeb` as well,
+  `fixtures_big_endian` runs the fixture dump big-endian and compares it with the host's. Without
+  the tools, both tests are skipped.
 
 Two build options tune memory against speed without changing any output (R33):
 `BARTAP_INPUT_BUF` (compressed bytes per inflate refill, default 512) and `BARTAP_XML_READAHEAD`

@@ -423,7 +423,7 @@ Character offsets in bookmarks count the bytes of text records only, never other
   - a seek's output matches a straight read after normalising (R48 P2);
   - every text-buffer size from the minimum up gives the same content once consecutive text records
     are merged (R6, R50);
-  - raw and no directory buffer give identical results (R24);
+  - every directory mode and spine layout gives identical results (R24, R41);
   - a bookmark round trip lands on the same block and character offset (R12);
   - XML read-ahead and compressed-input sizes do not change the output (R33);
   - a corrupted bookmark is refused or lands at the chapter start, never out of bounds (R29).
@@ -710,7 +710,8 @@ src/xml.c         layer 2 (R3 OCF/package): byte source, UTF-8/CP1252, entities,
 src/package.c     layer 2 (R3 OCF/package): container.xml, OPF, spine, metadata, href resolver,
                   bartap_open
 src/text.c        layer 3 (R3 text): text records, TOC iterator, bookmarks, seek, rolling buffer
-tests/            fixtures/gen.py, dump.c, unit/, diff/, prop/, fuzz/, corpus/fetch.py
+tests/            fixtures/ (gen.py, dump.c, check.py, seek.c), unit/, diff/, prop/, fuzz/, arm/,
+                  bigendian/
 ```
 
 Each layer depends only on the one below. The TOC iterator sits in `text.c` even though R3 lists
@@ -729,13 +730,16 @@ still locates the nav and NCX entries.
   records: unwinding container ends, block start plus style (R8), and the context after a seek (R49).
 - **Opening (R23, R41):**
   1. Walk the directory for `container.xml`, then again for the OPF.
-  2. OPF pass 1: metadata, itemref count, idref hashes written into spine slots.
+  2. OPF pass 1: metadata, itemref count, idref hashes written as compact items (R41).
   3. OPF pass 2: manifest entries replace the idref hashes with resolved path hash and length, and
      capture nav, NCX and cover. Two passes are needed because the manifest precedes the spine.
-  4. One full directory walk fills the slots. A spine item missing from the archive gets a warning and
-     fails only when opened.
+     If the items fit full slots, they are spread into them; otherwise the spine stays compact.
+  4. One full directory walk fills the full slots, or marks which compact items were found. A spine
+     item missing from the archive gets a warning and fails only when opened.
 
-The whole API is in place (phases 2 to 9 below); `include/bartap.h` is its reference.
+The whole API is in place (phases 2 to 9 below); `include/bartap.h` is its reference. Phase 10 is
+done except the real-book corpus and a sustained fuzz campaign (runs so far are minutes long, and
+clean).
 
 ### Phases
 
@@ -756,26 +760,27 @@ The whole API is in place (phases 2 to 9 below); `include/bartap.h` is its refer
 
 | Property | How it is checked |
 |---|---|
-| Inflate matches zlib; directory matches `zipfile` (R36) | `tests/diff/`, on fixtures and under fuzzers |
-| Checkpoint seek equals full replay (P1) | Every block as target, across fixtures |
+| Inflate matches zlib; directory matches `zipfile` (R36) | `tests/diff/`, on generated streams and archives |
+| Checkpoint seek equals full replay (P1) | Landing points through every fixture item, across ring sizes and text buffers, plus the unit seek tests |
 | Seek output equals a straight read after normalising (P2) | Same, plus random targets |
 | Text-buffer sizes from 4 up give the same merged content (R6, R50) | Every small size, then powers of two |
-| Raw equals no directory buffer (R24, R44) | All fixtures and fuzzers run in both modes |
+| Directory modes and spine layouts agree (R24, R41, R44) | Every fixture dumped in five modes (none, raw, hashed, compact, compact hashed); `fuzz_open` and the unit tests compare them too |
 | Bookmark round trip and each resolution level (R12) | Single-field and random corruption, exhaustive bit flips |
-| Input-buffer and read-ahead sizes do not change output (R33) | Build `dump` at two sizes of each, compare corpus hashes |
+| Input-buffer and read-ahead sizes do not change output (R33) | The fixture dump built at three sizes of each, every line compared; the unit tests and fuzz replays at 1 byte |
 | Balanced containers on broken markup (R45, R47) | Asserted inside the text fuzz harness |
-| Only `mem*` symbols (R34, R35) | `nm` check, already in place; add an Arm build, where `__aeabi_*` helpers are allowed |
-| No undefined behaviour, correct on big-endian (R19, R29, R34) | ASan and UBSan on every run; full suite under `qemu-user` |
+| Only `mem*` symbols (R34, R35) | `nm` check on the host build, and on the Cortex-M33 build, where `__aeabi_*` helpers are allowed |
+| No undefined behaviour, correct on big-endian (R19, R29, R34) | ASan and UBSan builds; the fixture dump built for big-endian Arm and run under `qemu-armeb` matches the host's |
 | Device hash equals host hash, targets met (R51) | Run from Tavernkeep against the hashes this repository publishes |
 
-- **Fuzz targets:** inflate, zip directory, tokenizer, open, text, TOC, seek with arbitrary bookmark
-  bytes.
+- **Fuzz targets:** tokenizer (`fuzz_xml`); open (`fuzz_open`, which also covers the directory,
+  inflate and resource streams, in every mode); text; TOC; seek with arbitrary bookmark bytes.
 - **Fixtures:** `tests/fixtures/gen.py` generates deterministic EPUBs covering each record.
-  `tests/corpus/fetch.py` downloads public-domain books, uncommitted, including R51's Pride and
-  Prejudice, a large single-file book and an image-heavy book.
-- **Tools still to install:** `cmake`, `clang` (libFuzzer), `arm-none-eabi-gcc` and
-  `arm-none-eabi-newlib` (compile, symbol and `sizeof` checks), a big-endian cross-compiler and
-  `qemu-user`. The cross-compiler is not chosen yet.
+  A corpus fetcher, not yet written, will download public-domain books, uncommitted, including
+  R51's Pride and Prejudice, a large single-file book and an image-heavy book.
+- **Tools:** `cmake`, Python 3 and zlib; `clang` for libFuzzer; `arm-none-eabi-gcc` and newlib for
+  the Cortex-M33 checks. The big-endian build uses the same compiler with `-mbig-endian`,
+  freestanding over a minimal libc in `tests/bigendian/` since no big-endian newlib is packaged, and
+  runs under `qemu-armeb`. A missing cross tool skips its test.
 
 ### Out of scope
 
