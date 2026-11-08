@@ -1341,6 +1341,15 @@ bartap_err_t bt_stream_reread(const bartap_stream_t *stream, uint32_t offset, ui
 
 /* ---- Verify (R31, R38) ---- */
 
+// Marks a stream as never having opened, as bt_stream_open does on a failure, so every later call
+// only returns err.
+static bartap_err_t stream_fail(bartap_stream_t *stream, bartap_err_t err)
+{
+    stream->source = NULL;
+    stream->status = err;
+    return err;
+}
+
 // The entry facts a spine slot already holds, copied from its directory record when the book
 // opened (R22), so a spine lookup needs no directory read.
 static bartap_err_t spine_entry(const bartap_book_t *book, uint16_t spine_index,
@@ -1369,10 +1378,8 @@ bartap_err_t bartap_verify_init(bartap_verify_t *verify, const bartap_book_t *bo
 
     bartap_err_t err = spine_entry(book, spine_index, &entry);
     if (err != BARTAP_OK) {
-        // bad index. mark the stream unopened, as bt_stream_open does, so a step only repeats this
-        verify->stream.source = NULL;
-        verify->stream.status = err;
-        return err;
+        // bad index, mark the stream unopened so a step only repeats this
+        return stream_fail(&verify->stream, err);
     }
     // a verify is just a stream nobody reads from
     return bt_stream_open(&verify->stream, book->source, &entry, window);
@@ -1388,9 +1395,7 @@ bartap_err_t bartap_verify_init_dir(bartap_verify_t *verify, const bartap_book_t
     bartap_err_t err = bt_dir_entry(&book->directory, dir_offset, &entry);
     if (err != BARTAP_OK) {
         // bad record, mark the stream unopened and pass error up
-        verify->stream.source = NULL;
-        verify->stream.status = err;
-        return err;
+        return stream_fail(&verify->stream, err);
     }
     return bt_stream_open(&verify->stream, book->source, &entry, window);
 }
@@ -1437,53 +1442,68 @@ bartap_err_t bartap_verify_step(bartap_verify_t *verify, uint32_t max_bytes)
 
 /* ---- Resources (R38) ---- */
 
-// Opens a resource by name for reading.
+// Opens a resource by name for reading. BARTAP_END if no entry has that name; the first in directory order wins (R44).
 bartap_err_t bartap_resource_open(bartap_resource_t *res, const bartap_book_t *book,
                                   const char *path, uint32_t path_len, uint8_t *window)
 {
-    (void)res;
-    (void)book;
-    (void)path;
-    (void)path_len;
-    (void)window;
-    return BARTAP_ERR_UNSUPPORTED;
+    bartap_entry_t entry;
+
+    if (path_len > 0xFFFFu) {
+        // longer than any name a directory record can hold, so nothing matches
+        return stream_fail(&res->stream, BARTAP_END);
+    }
+    bartap_err_t err = bt_dir_find(&book->directory, path, (uint16_t)path_len, &entry);
+    if (err != BARTAP_OK) {
+        // no match or a bad directory, mark the stream unopened and pass it up
+        return stream_fail(&res->stream, err);
+    }
+    // an unsupported method fails here, not at the first read
+    return bt_stream_open(&res->stream, book->source, &entry, window);
 }
 
 // Opens a resource from an untrusted directory-record offset, such as an image record's.
 bartap_err_t bartap_resource_open_dir(bartap_resource_t *res, const bartap_book_t *book,
                                       uint32_t dir_offset, uint8_t *window)
 {
-    (void)res;
-    (void)book;
-    (void)dir_offset;
-    (void)window;
-    return BARTAP_ERR_UNSUPPORTED;
+    bartap_entry_t entry;
+
+    // the offset is untrusted, bt_dir_entry checks it (R29)
+    bartap_err_t err = bt_dir_entry(&book->directory, dir_offset, &entry);
+    if (err != BARTAP_OK) {
+        // bad record, mark the stream unopened and pass error up
+        return stream_fail(&res->stream, err);
+    }
+    return bt_stream_open(&res->stream, book->source, &entry, window);
 }
 
 // Opens a whole chapter by spine index, such as for inflating it into PSRAM.
 bartap_err_t bartap_resource_open_spine(bartap_resource_t *res, const bartap_book_t *book,
                                         uint16_t spine_index, uint8_t *window)
 {
-    (void)res;
-    (void)book;
-    (void)spine_index;
-    (void)window;
-    return BARTAP_ERR_UNSUPPORTED;
+    bartap_entry_t entry;
+
+    bartap_err_t err = spine_entry(book, spine_index, &entry);
+    if (err != BARTAP_OK) {
+        // bad index, mark the stream unopened so a read only repeats this
+        return stream_fail(&res->stream, err);
+    }
+    return bt_stream_open(&res->stream, book->source, &entry, window);
 }
 
-// Returns the entry's inflated size, for sizing a destination.
+// Returns the entry's inflated size, for sizing a destination. 0 if the resource never opened.
 uint32_t bartap_resource_size(const bartap_resource_t *res)
 {
-    (void)res;
-    return 0;
+    if (res->stream.source == NULL) {
+        // failed open, the entry may be half-filled or missing
+        return 0;
+    }
+    // from the directory (R22). a read still fails if the data disagrees
+    return res->stream.entry.uncompressed_size;
 }
 
 // Delivers the next bytes; BARTAP_END only once the CRC and size match.
 bartap_err_t bartap_resource_read(bartap_resource_t *res, uint8_t *buf, uint32_t cap, uint32_t *got)
 {
-    (void)res;
-    (void)buf;
-    (void)cap;
-    (void)got;
-    return BARTAP_ERR_UNSUPPORTED;
+    // a resource is just a stream, the checks all happen there (R31)
+    return bt_stream_read(&res->stream, buf, cap, got);
 }
