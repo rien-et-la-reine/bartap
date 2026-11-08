@@ -140,8 +140,6 @@ uint32_t bt_crc32(uint32_t crc, const uint8_t *data, size_t len)
     return ~crc;
 }
 
-/* ---- Everything below is a stub ---- */
-
 // convert little-endian bytes to host-endian integers, and vice versa.
 
 // Reads a little-endian 16-bit value from p.
@@ -1258,18 +1256,13 @@ bartap_err_t bt_stream_open(bartap_stream_t *stream, const bartap_source_t *sour
     return err;
 }
 
-// Delivers the next bytes; BARTAP_END only once the CRC and size match. A failure or the end is
-// sticky until a rewind.
-bartap_err_t bt_stream_read(bartap_stream_t *stream, uint8_t *buf, uint32_t cap, uint32_t *got)
+// Makes sure undelivered bytes wait in the window: BARTAP_OK if some do, else BARTAP_END once the
+// CRC and size match, or an error. Sets the sticky status for the end and failures.
+static bartap_err_t stream_ready(bartap_stream_t *stream)
 {
-    *got = 0;
     if (stream->status != BARTAP_OK) {
         return stream->status;
     }
-    if (cap == 0) {
-        return BARTAP_ERR_ARG;
-    }
-
     if (stream->window_write == stream->window_read) {
         bartap_err_t err = bt_inflate_fill(stream);
         // Before checking err: a failed fill may still have overwritten older bytes.
@@ -1286,6 +1279,25 @@ bartap_err_t bt_stream_read(bartap_stream_t *stream, uint8_t *buf, uint32_t cap,
             stream->status = intact ? BARTAP_END : BARTAP_ERR_CORRUPT;
             return stream->status;
         }
+    }
+    return BARTAP_OK;
+}
+
+// Delivers the next bytes; BARTAP_END only once the CRC and size match. A failure or the end is
+// sticky until a rewind.
+bartap_err_t bt_stream_read(bartap_stream_t *stream, uint8_t *buf, uint32_t cap, uint32_t *got)
+{
+    *got = 0;
+    if (stream->status != BARTAP_OK) {
+        return stream->status;
+    }
+    if (cap == 0) {
+        return BARTAP_ERR_ARG;
+    }
+    bartap_err_t err = stream_ready(stream);
+    if (err != BARTAP_OK) {
+        // the end or a failure, pass it up
+        return err;
     }
 
     uint32_t len = stream->window_write - stream->window_read;
@@ -1329,34 +1341,98 @@ bartap_err_t bt_stream_reread(const bartap_stream_t *stream, uint32_t offset, ui
 
 /* ---- Verify (R31, R38) ---- */
 
+// The entry facts a spine slot already holds, copied from its directory record when the book
+// opened (R22), so a spine lookup needs no directory read.
+static bartap_err_t spine_entry(const bartap_book_t *book, uint16_t spine_index,
+                               bartap_entry_t *entry)
+{
+    if (spine_index >= book->spine_count) {
+        // past the spine the book holds, the caller's mistake
+        return BARTAP_ERR_ARG;
+    }
+    // copy the facts across, the path hash and name length aren't part of an entry
+    const bartap_spine_item_t *item = &book->spine[spine_index];
+    entry->dir_offset = item->dir_offset;
+    entry->local_offset = item->local_offset;
+    entry->compressed_size = item->compressed_size;
+    entry->uncompressed_size = item->uncompressed_size;
+    entry->crc32 = item->crc32;
+    entry->method = item->method;
+    return BARTAP_OK;
+}
+
 // Prepares an incremental CRC check of a spine item's entry.
 bartap_err_t bartap_verify_init(bartap_verify_t *verify, const bartap_book_t *book,
                                 uint16_t spine_index, uint8_t *window)
 {
-    (void)verify;
-    (void)book;
-    (void)spine_index;
-    (void)window;
-    return BARTAP_ERR_UNSUPPORTED;
+    bartap_entry_t entry;
+
+    bartap_err_t err = spine_entry(book, spine_index, &entry);
+    if (err != BARTAP_OK) {
+        // bad index. mark the stream unopened, as bt_stream_open does, so a step only repeats this
+        verify->stream.source = NULL;
+        verify->stream.status = err;
+        return err;
+    }
+    // a verify is just a stream nobody reads from
+    return bt_stream_open(&verify->stream, book->source, &entry, window);
 }
 
 // Prepares an incremental CRC check of the entry at a directory-record offset.
 bartap_err_t bartap_verify_init_dir(bartap_verify_t *verify, const bartap_book_t *book,
                                     uint32_t dir_offset, uint8_t *window)
 {
-    (void)verify;
-    (void)book;
-    (void)dir_offset;
-    (void)window;
-    return BARTAP_ERR_UNSUPPORTED;
+    bartap_entry_t entry;
+
+    // the offset is untrusted, bt_dir_entry checks it (R29)
+    bartap_err_t err = bt_dir_entry(&book->directory, dir_offset, &entry);
+    if (err != BARTAP_OK) {
+        // bad record, mark the stream unopened and pass error up
+        verify->stream.source = NULL;
+        verify->stream.status = err;
+        return err;
+    }
+    return bt_stream_open(&verify->stream, book->source, &entry, window);
 }
 
-// Inflates up to max_bytes; BARTAP_MORE, BARTAP_OK when the entry checks out, or an error.
+// Inflates up to max_bytes; BARTAP_MORE, BARTAP_OK when the entry checks out, or an error. The CRC
+// is folded straight over the window, so no buffer is needed. Repeats its result once finished.
 bartap_err_t bartap_verify_step(bartap_verify_t *verify, uint32_t max_bytes)
 {
-    (void)verify;
-    (void)max_bytes;
-    return BARTAP_ERR_UNSUPPORTED;
+    bartap_stream_t *stream = &verify->stream;
+
+    if (max_bytes == 0) {
+        // no budget means no progress, same as a zero cap on a read
+        return BARTAP_ERR_ARG;
+    }
+    while (max_bytes > 0) {
+        // refill the window if everything in it has been checked
+        bartap_err_t err = stream_ready(stream);
+        if (err == BARTAP_END) {
+            // size and CRC matched, the entry checks out
+            return BARTAP_OK;
+        }
+        if (err != BARTAP_OK) {
+            // bad data or a failed read, pass error up
+            return err;
+        }
+        // take what's waiting, but only up to the wrap so it's one run of bytes
+        uint32_t pos = stream->window_read & (BARTAP_WINDOW_SIZE - 1u);
+        uint32_t len = stream->window_write - stream->window_read;
+        if (len > BARTAP_WINDOW_SIZE - pos) {
+            len = BARTAP_WINDOW_SIZE - pos; // the next pass takes the rest
+        }
+        if (len > max_bytes) {
+            len = max_bytes;
+        }
+        // fold into the CRC and mark the bytes delivered, freeing their room in the window
+        stream->crc32 = bt_crc32(stream->crc32, stream->window + pos, len);
+        stream->window_read += len;
+        stream->delivered += len;
+        max_bytes -= len;
+    }
+    // budget spent. even at the entry's last byte, the end check waits for the next step
+    return BARTAP_MORE;
 }
 
 /* ---- Resources (R38) ---- */
