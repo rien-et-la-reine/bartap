@@ -554,7 +554,7 @@ bartap_err_t bartap_text_seek(bartap_text_t *text, const bartap_bookmark_t *book
 
 /* -- Rolling buffer (R48) -- */
 
-/* ring NULL with size non-zero is memory mode's virtual window. */
+/* size must be a power of two. ring NULL is memory mode's virtual window. */
 bartap_err_t bartap_rolling_init(bartap_rolling_t *rolling, uint8_t *ring, uint32_t size);
 
 /* -- Bookmarks (R12, R19) -- */

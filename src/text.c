@@ -115,32 +115,7 @@ bartap_err_t bt_text_replay(bartap_text_t *text, uint32_t block_offset, uint32_t
     return BARTAP_ERR_UNSUPPORTED;
 }
 
-/* ---- Rolling buffer (R48) ---- */
-
-bartap_err_t bartap_rolling_init(bartap_rolling_t *rolling, uint8_t *ring, uint32_t size)
-{
-    (void)rolling;
-    (void)ring;
-    (void)size;
-    return BARTAP_ERR_UNSUPPORTED;
-}
-
-void bt_ring_append(bartap_rolling_t *rolling, const uint8_t *data, uint32_t len)
-{
-    (void)rolling;
-    (void)data;
-    (void)len;
-}
-
-bartap_err_t bt_ring_read(const bartap_rolling_t *rolling, uint32_t offset, uint8_t *buf,
-                          uint32_t len)
-{
-    (void)rolling;
-    (void)offset;
-    (void)buf;
-    (void)len;
-    return BARTAP_ERR_UNSUPPORTED;
-}
+/* ---- Checkpoints (R48). The ring they index lives in xml.c ---- */
 
 void bt_checkpoint_take(bartap_text_t *text, uint32_t block_offset, uint32_t resume_offset)
 {

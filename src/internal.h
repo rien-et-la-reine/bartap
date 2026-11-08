@@ -77,6 +77,15 @@ bartap_err_t bt_stream_reread(const bartap_stream_t *stream, uint32_t offset, ui
 
 /* ---- xml.c ---- */
 
+/* Rolling buffer (R48): the latest bytes a source delivered, by their offset in the source. A NULL
+ * ring only counts them, for memory mode. */
+void bt_ring_append(bartap_rolling_t *rolling, const uint8_t *data, uint32_t len);
+
+/* BARTAP_END if the bytes have left the ring or it stores none, BARTAP_ERR_ARG if they have not been
+ * delivered yet. */
+bartap_err_t bt_ring_read(const bartap_rolling_t *rolling, uint32_t offset, uint8_t *buf,
+                          uint32_t len);
+
 /* Byte source (R15). */
 void bt_bytes_init_stream(bartap_bytes_t *bytes, bartap_stream_t *stream, bartap_rolling_t *rolling);
 void bt_bytes_init_memory(bartap_bytes_t *bytes, const uint8_t *data, uint32_t size,
@@ -140,10 +149,7 @@ bartap_err_t bt_text_fill(bartap_text_t *text, bartap_record_t *rec);
 bartap_err_t bt_image_lookup(bartap_text_t *text, const char *src, uint32_t src_len,
                              uint32_t *dir_offset);
 
-/* Rolling buffer (R48). */
-void bt_ring_append(bartap_rolling_t *rolling, const uint8_t *data, uint32_t len);
-bartap_err_t bt_ring_read(const bartap_rolling_t *rolling, uint32_t offset, uint8_t *buf,
-                          uint32_t len);
+/* Checkpoints (R48). */
 void bt_checkpoint_take(bartap_text_t *text, uint32_t block_offset, uint32_t resume_offset);
 bartap_err_t bt_checkpoint_restore(bartap_text_t *text, const bartap_checkpoint_t *checkpoint);
 

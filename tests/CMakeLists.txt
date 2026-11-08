@@ -21,6 +21,7 @@ endif()
 bartap_add_test(test_crc_zlib diff/test_crc_zlib.c ZLIB::ZLIB)
 bartap_add_test(test_stream unit/test_stream.c)
 bartap_add_test(test_directory unit/test_directory.c)
+bartap_add_test(test_bytes unit/test_bytes.c)
 bartap_add_test(test_inflate_zlib diff/test_inflate_zlib.c ZLIB::ZLIB)
 
 # Real zip files, against Python's zipfile (R36).
