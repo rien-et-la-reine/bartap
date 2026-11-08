@@ -190,7 +190,7 @@ typedef struct {
 /* ---- State structs (R28) ------------------------------------------------------------------ */
 
 /* Declared by the caller by real type, so sizeof is the size. Fields are Bartap's: callers read
- * nothing from them. All are stubs until implemented; expect fields to change. */
+ * nothing from them. Those for code still stubbed (package.c, text.c) may change. */
 
 /* -- Layer 1: archive and entries (zip.c) -- */
 

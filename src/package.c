@@ -1,5 +1,4 @@
-/* Layer 2 (R3): container, package and book. Depends only on xml.c and zip.c. Everything here is
- * a stub. */
+/* Layer 2 (R3): container, package and book. Depends only on xml.c and zip.c. */
 #include "internal.h"
 
 /* ---- Package (R23, R25, R41, R43) ---- */

@@ -51,8 +51,9 @@ static void open_entry(fixture_t *f, uint32_t len)
     CHECK(bt_stream_open(&stream, &f->source, &f->entry, window) == BARTAP_OK);
 }
 
-/* One read, checked against data at the model's position, which it then advances. */
-static void read_and_check(uint32_t *pos, uint32_t len, uint32_t cap)
+/* One read, checked against data at the model's position, which it then advances. Returns whether
+ * it moved, so a loop over it stops on a failure instead of spinning on it. */
+static bool read_and_check(uint32_t *pos, uint32_t len, uint32_t cap)
 {
     uint32_t got = UINT32_MAX;
     bartap_err_t err = bt_bytes_read(&bytes, out, cap, &got);
@@ -60,21 +61,23 @@ static void read_and_check(uint32_t *pos, uint32_t len, uint32_t cap)
     if (*pos == len) {
         CHECK(err == BARTAP_END);
         CHECK(got == 0);
-        return;
+        return false;
     }
     CHECK(err == BARTAP_OK);
     CHECK(got > 0 && got <= cap && got <= len - *pos);
+    if (err != BARTAP_OK || got == 0 || got > cap || got > len - *pos) {
+        return false;
+    }
     CHECK(memcmp(out, data + *pos, got) == 0);
     *pos += got;
+    return true;
 }
 
 /* Reads everything from the model's position to the end. */
 static void read_to_end(uint32_t *pos, uint32_t len)
 {
     while (*pos < len) {
-        uint32_t before = *pos;
-        read_and_check(pos, len, 1u + fixture_random(&rng) % 5000u);
-        if (*pos == before) {
+        if (!read_and_check(pos, len, 1u + fixture_random(&rng) % 5000u)) {
             return; /* a failed read; read_and_check has already reported it */
         }
     }
@@ -213,8 +216,7 @@ static void test_replay_from_ring(void)
     open_entry(&f, DATA_MAX);
     CHECK(bartap_rolling_init(&rolling, ring_big, RING_BIG) == BARTAP_OK);
     bt_bytes_init_stream(&bytes, &stream, &rolling);
-    while (pos < 150000u) {
-        read_and_check(&pos, DATA_MAX, 4000);
+    while (pos < 150000u && read_and_check(&pos, DATA_MAX, 4000)) {
     }
     uint32_t live = stream.delivered;
     uint32_t target = live - 50000u;
@@ -223,9 +225,9 @@ static void test_replay_from_ring(void)
     uint32_t reads = card_reads;
     pos = target;
     CHECK(bt_bytes_seek(&bytes, pos) == BARTAP_OK);
-    while (pos < live) {
-        read_and_check(&pos, DATA_MAX, 3000);
+    while (pos < live && read_and_check(&pos, DATA_MAX, 3000)) {
     }
+    CHECK(pos == live);
     CHECK(card_reads == reads);
     CHECK(stream.delivered == live && rolling.delivered == live);
 
@@ -252,9 +254,9 @@ static void test_replay_from_window(void)
         bt_bytes_init_stream(&bytes, &stream, r);
         /* The window holds only what came since its last refill, from 0 to 32 KiB back, so read on
          * until it reaches further back than the small ring. */
-        while (pos < 100000u ||
-               stream.delivered - (stream.window_write - stream.window_valid) <= RING_SMALL) {
-            read_and_check(&pos, DATA_MAX, 1000);
+        while ((pos < 100000u ||
+                stream.delivered - (stream.window_write - stream.window_valid) <= RING_SMALL) &&
+               read_and_check(&pos, DATA_MAX, 1000)) {
         }
         uint32_t live = stream.delivered;
         uint32_t target = stream.window_write - stream.window_valid; /* its oldest byte */
@@ -265,9 +267,9 @@ static void test_replay_from_window(void)
         uint32_t reads = card_reads;
         pos = target;
         CHECK(bt_bytes_seek(&bytes, pos) == BARTAP_OK);
-        while (pos < live) {
-            read_and_check(&pos, DATA_MAX, 3000);
+        while (pos < live && read_and_check(&pos, DATA_MAX, 3000)) {
         }
+        CHECK(pos == live);
         CHECK(card_reads == reads);
         CHECK(stream.delivered == live);
         CHECK(r == NULL || r->delivered == live); /* replayed bytes aren't appended again */

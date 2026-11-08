@@ -22,8 +22,6 @@ bartap_err_t bt_read(const bartap_source_t *src, uint32_t offset, uint8_t *buf, 
 void bt_warn(bartap_warnings_t *warnings, bartap_warning_t code, uint16_t spine_index,
              uint32_t offset);
 
-/* Stubs from here on. Those returning bartap_err_t return BARTAP_ERR_UNSUPPORTED until implemented. */
-
 /* Little-endian fields, byte by byte: no struct overlays, no unaligned accesses (R19). */
 uint16_t bt_get_le16(const uint8_t *p);
 uint32_t bt_get_le32(const uint8_t *p);
@@ -123,6 +121,8 @@ uint32_t bt_utf8_decode(const uint8_t *p, uint32_t len, char *out, uint32_t *out
 uint32_t bt_entity_decode(const char *name, uint32_t name_len, char *out);
 
 /* ---- package.c ---- */
+
+/* Stubs from here on. Those returning bartap_err_t return BARTAP_ERR_UNSUPPORTED until implemented. */
 
 /* Joins href to base, percent-decoding once and refusing %2F (R43). */
 bartap_err_t bt_href_resolve(const char *base, uint32_t base_len, const char *href, uint32_t href_len,
