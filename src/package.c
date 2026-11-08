@@ -371,6 +371,13 @@ static bartap_err_t read_field(bartap_book_t *book, bartap_open_work_t *work, ui
     return err;
 }
 
+// How many compact items the caller's array holds, short of BARTAP_NO_SPINE (R41).
+static uint16_t compact_capacity(const bartap_book_t *book)
+{
+    uint32_t n = (uint32_t)book->spine_capacity * BARTAP_SPINE_COMPACT_PER_ITEM;
+    return (uint16_t)(n < BARTAP_NO_SPINE ? n : BARTAP_NO_SPINE - 1u);
+}
+
 // Metadata, the itemref count and the idref hashes in the spine slots. The manifest comes before the
 // spine, so idrefs can't be resolved yet: the second pass does that. Directory walk 2 of 3 finds the
 // OPF.
@@ -468,10 +475,15 @@ bartap_err_t bt_opf_first_pass(bartap_book_t *book, bartap_open_work_t *work, ui
         } else if (in_spine && IS_START(t, "itemref")) {
             // counted whether or not it fits, so the caller learns what it would need (R41)
             required++;
-            if (book->spine_count < book->spine_capacity) {
-                bartap_spine_item_t *slot = &book->spine[book->spine_count++];
-                memset(slot, 0, sizeof *slot);
-                slot->dir_offset = BARTAP_NO_DIR_OFFSET;
+            if (book->spine_count < compact_capacity(book)) {
+                // compact for now: how many items there are is only known at the end (R41)
+                if (book->spine_count % BARTAP_SPINE_COMPACT_PER_ITEM == 0) {
+                    // a slot's first item clears it all, so no stale byte is left past its last
+                    memset(&book->spine[book->spine_count / BARTAP_SPINE_COMPACT_PER_ITEM], 0,
+                           sizeof book->spine[0]);
+                }
+                bartap_spine_compact_t *slot = BT_SPINE_COMPACT(book->spine, book->spine_count);
+                book->spine_count++;
                 if (ATTR(work, "idref", &value, &value_len)) {
                     // the idref's hash waits here for the manifest, in the second pass
                     slot->path_hash = hash_of(value, value_len);
@@ -490,8 +502,8 @@ bartap_err_t bt_opf_first_pass(bartap_book_t *book, bartap_open_work_t *work, ui
     }
 
     book->spine_required = required;
-    if (required > book->spine_capacity) {
-        // later chapters are unreachable, a bigger array would hold them (R41)
+    if (required > book->spine_count) {
+        // later chapters are unreachable, even as compact items. a bigger array would hold them (R41)
         book_warn(book, BARTAP_WARN_SPINE_TRUNCATED, BARTAP_NO_SPINE, required);
     }
     if (!found_unique) {
@@ -514,7 +526,8 @@ static void set_path(uint32_t *hash, uint16_t *len, uint32_t path_hash, uint16_t
 }
 
 // The manifest: idrefs become resolved path hashes and lengths, and the nav, NCX and cover are
-// captured. Reads the OPF again, from the window if it's small, else from the card.
+// captured. Reads the OPF again, from the window if it's small, else from the card. Spine items are
+// still compact here.
 bartap_err_t bt_opf_second_pass(bartap_book_t *book, bartap_open_work_t *work)
 {
     bool in_manifest = false;
@@ -567,7 +580,7 @@ bartap_err_t bt_opf_second_pass(bartap_book_t *book, bartap_open_work_t *work)
         }
         bool for_spine = false;
         for (uint16_t i = 0; i < book->spine_count && !for_spine; i++) {
-            const bartap_spine_item_t *slot = &book->spine[i];
+            const bartap_spine_compact_t *slot = BT_SPINE_COMPACT(book->spine, i);
             for_spine = (slot->flags & BT_SPINE_PENDING) != 0 && slot->path_hash == id_hash;
         }
         if (!for_spine && !is_nav && !is_cover && !is_ncx) {
@@ -589,7 +602,7 @@ bartap_err_t bt_opf_second_pass(bartap_book_t *book, bartap_open_work_t *work)
         uint32_t path_hash = hash_of(work->resolved, path_len);
 
         for (uint16_t i = 0; i < book->spine_count; i++) {
-            bartap_spine_item_t *slot = &book->spine[i];
+            bartap_spine_compact_t *slot = BT_SPINE_COMPACT(book->spine, i);
             if ((slot->flags & BT_SPINE_PENDING) != 0 && slot->path_hash == id_hash) {
                 // resolved, or settled as missing. a later item with the same id doesn't count
                 slot->path_hash = path_hash;
@@ -613,13 +626,36 @@ bartap_err_t bt_opf_second_pass(bartap_book_t *book, bartap_open_work_t *work)
 
     // idrefs with no manifest item are settled as missing
     for (uint16_t i = 0; i < book->spine_count; i++) {
-        bartap_spine_item_t *slot = &book->spine[i];
+        bartap_spine_compact_t *slot = BT_SPINE_COMPACT(book->spine, i);
         if ((slot->flags & BT_SPINE_PENDING) != 0) {
             slot->flags &= (uint8_t)~BT_SPINE_PENDING;
             slot->path_len = 0;
         }
     }
     return BARTAP_OK;
+}
+
+/* ---- Spine layout (R41) ---- */
+
+// The OPF passes leave compact items. If the book's items fit full slots, they are spread into them,
+// so a chapter opens with no lookup; otherwise they stay compact. Last first: full slot i covers
+// compact items 3i to 3i+2, all already moved for i above 0, and item 0 is copied out before its
+// slot is written.
+static void settle_spine(bartap_book_t *book)
+{
+    if (book->spine_count > book->spine_capacity) {
+        return;
+    }
+    for (uint16_t i = book->spine_count; i-- != 0;) {
+        bartap_spine_compact_t item = *BT_SPINE_COMPACT(book->spine, i);
+        bartap_spine_item_t *slot = &book->spine[i];
+        memset(slot, 0, sizeof *slot);
+        slot->path_hash = item.path_hash;
+        slot->path_len = item.path_len;
+        slot->flags = item.flags;
+        slot->dir_offset = BARTAP_NO_DIR_OFFSET;
+    }
+    book->spine_compact = false;
 }
 
 /* ---- The directory walk (R22, R23, R44) ---- */
@@ -661,6 +697,17 @@ bartap_err_t bt_match_spine(bartap_book_t *book, bartap_open_work_t *work)
             return err;
         }
         for (uint16_t i = 0; i < book->spine_count; i++) {
+            if (book->spine_compact) {
+                // the path is all a compact item keeps: it notes the match, and is looked up again
+                // by the same rule when opened (R41)
+                bartap_spine_compact_t *compact = BT_SPINE_COMPACT(book->spine, i);
+                if (compact->path_len != 0 && compact->path_len == name_len &&
+                    compact->path_hash == name_hash) {
+                    duplicate = duplicate || (compact->flags & BT_SPINE_FOUND) != 0;
+                    compact->flags |= BT_SPINE_FOUND;
+                }
+                continue;
+            }
             bartap_spine_item_t *slot = &book->spine[i];
             if (slot->path_len == 0 || slot->path_len != name_len || slot->path_hash != name_hash) {
                 continue;
@@ -691,7 +738,9 @@ bartap_err_t bt_match_spine(bartap_book_t *book, bartap_open_work_t *work)
 
     // a slot nothing matched fails when opened, not now (R23)
     for (uint16_t i = 0; i < book->spine_count; i++) {
-        if (book->spine[i].dir_offset == BARTAP_NO_DIR_OFFSET) {
+        bool found = book->spine_compact ? (BT_SPINE_COMPACT(book->spine, i)->flags & BT_SPINE_FOUND) != 0
+                                         : book->spine[i].dir_offset != BARTAP_NO_DIR_OFFSET;
+        if (!found) {
             book_warn(book, BARTAP_WARN_SPINE_ITEM_MISSING, i, 0);
         }
     }
@@ -742,6 +791,8 @@ bartap_err_t bartap_open(bartap_book_t *book, const bartap_source_t *source,
     book->source = source;
     book->spine = spine;
     book->spine_capacity = spine_capacity;
+    // the OPF passes write compact items, settled once their number is known (R41)
+    book->spine_compact = true;
     book->warnings.fn = warn_fn;
     book->warnings.user = warn_user;
     book->nav_dir_offset = BARTAP_NO_DIR_OFFSET;
@@ -767,6 +818,7 @@ bartap_err_t bartap_open(bartap_book_t *book, const bartap_source_t *source,
         err = bt_opf_second_pass(book, work);
     }
     if (err == BARTAP_OK) {
+        settle_spine(book);
         err = bt_match_spine(book, work);
     }
     if (err != BARTAP_OK) {
@@ -804,7 +856,7 @@ bartap_err_t bartap_book_spine_linear(const bartap_book_t *book, uint16_t spine_
     if (spine_index >= book->spine_count) {
         return BARTAP_ERR_ARG;
     }
-    *linear = (book->spine[spine_index].flags & BT_SPINE_NONLINEAR) == 0;
+    *linear = (bt_spine_flags(book, spine_index) & BT_SPINE_NONLINEAR) == 0;
     return BARTAP_OK;
 }
 

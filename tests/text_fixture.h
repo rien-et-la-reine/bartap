@@ -27,6 +27,9 @@ static char tx_buf[1u << 16];
 static const char *tx_chapters[TX_CHAPTERS_MAX];
 static uint32_t tx_chapter_count;
 
+/* The method tx_build gives the nav and NCX entries, deflated unless a test says otherwise. */
+static uint16_t tx_toc_method = EPUB_DEFLATED;
+
 /* Counts reads that reach the archive, for the checkpoint tests (R48). */
 static uint32_t tx_reads;
 
@@ -76,11 +79,11 @@ static inline void tx_build(const char *const *chapters, uint32_t count, const c
     epub_add(&tx_epub, "OEBPS/images/a.png", "PNG-A", EPUB_STORED);
     epub_add(&tx_epub, "OEBPS/images/b c.png", "PNG-B", EPUB_STORED);
     if (nav != NULL) {
-        epub_add(&tx_epub, TX_NAV, nav, EPUB_DEFLATED);
+        epub_add(&tx_epub, TX_NAV, nav, tx_toc_method);
         str_add(&manifest, "<item id=\"nav\" href=\"nav.xhtml\" properties=\"nav\" media-type=\"application/xhtml+xml\"/>");
     }
     if (ncx != NULL) {
-        epub_add(&tx_epub, TX_NCX, ncx, EPUB_DEFLATED);
+        epub_add(&tx_epub, TX_NCX, ncx, tx_toc_method);
         str_add(&manifest, "<item id=\"ncx\" href=\"toc.ncx\" media-type=\"application/x-dtbncx+xml\"/>");
     }
     epub_add_opf(&tx_epub, TX_OPF, "uid", "<dc:identifier id=\"uid\">urn:test:book</dc:identifier><dc:title>T</dc:title>",

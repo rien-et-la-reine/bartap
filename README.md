@@ -64,6 +64,11 @@ bartap_err_t read_chapter(uint32_t archive_size, uint16_t chapter)
 - **Positions:** call `bartap_bookmark_write` with a block start's `block_offset` and a character
   offset into the block. Later, call `bartap_bookmark_read` and then `bartap_text_seek` on the opened
   item. After a seek, the records restate the containers and style around the landing point (R49).
+- **Directory and spine memory:** `bartap_open` picks modes from what fits, and none changes any
+  result. A `dir_buf` that holds the whole central directory keeps it in RAM. One that only holds an
+  index of it (10 bytes per entry) makes each lookup read one record instead of walking the
+  directory on the card. A spine array with fewer slots than the book has items holds up to three
+  compact items per slot, each looked up when opened.
 - **Faster seeks:** give `bartap_text_open` a `bartap_rolling_t` set up by `bartap_rolling_init` over a
   power-of-two ring. Seeks backwards are then served from the ring and checkpoints, not by re-reading
   the chapter from its start.

@@ -3,10 +3,11 @@
  *
  * For any archive:
  *   - opening never reads or writes out of bounds, and every loop ends (R29);
- *   - raw and no-buffer directory modes give the same result, book and warnings (R24);
+ *   - every directory mode (none, raw, hashed) and spine layout (full, compact) gives the same
+ *     result, book and warnings (R24, R41);
  *   - an opened book's limits hold: spine count within capacity and required, metadata within its
- *     fields, every filled slot's entry where the directory says;
- *   - every spine item and the cover read the same bytes and end the same way in both modes, and
+ *     fields, every item's entry where the directory says;
+ *   - every spine item and the cover read the same bytes and end the same way in every mode, and
  *     verify agrees with reading (R31);
  *   - the TOC and every item's text run to their ends within bounds, with well-formed entries (R26). */
 #include "epub_build.h"
@@ -24,10 +25,15 @@
 #define READ_LIMIT (1u << 20) /* a bomb's declared size can be large; read this much at most */
 
 static uint8_t window[BARTAP_WINDOW_SIZE];
-static uint8_t dir_buf[1u << 16];
+static uint8_t dir_bufs[2][1u << 16];
 static bartap_open_work_t work;
-static bartap_book_t books[2];
-static bartap_spine_item_t spines[2][SPINE_CAP];
+
+/* The modes compared: the first is the reference. Hashed gets a buffer one byte short of the
+ * directory, which an index always fits (10 bytes an entry against 46 at least), and compact gets
+ * a third of the slots the reference used. */
+enum { M_NONE, M_RAW, M_HASHED, M_COMPACT, M_COMPACT_HASHED, M_COUNT };
+static bartap_book_t books[M_COUNT];
+static bartap_spine_item_t spines[M_COUNT][SPINE_CAP];
 static bartap_resource_t res;
 static bartap_verify_t verify;
 static uint8_t chunk[4096];
@@ -127,24 +133,60 @@ static void check_verify(const bartap_book_t *book, uint16_t index, bartap_err_t
     }
 }
 
-static void check_book(const bartap_book_t *b, const bartap_spine_item_t *spine)
+static void check_book(const bartap_book_t *b)
 {
-    FUZZ_CHECK(b->spine_count <= SPINE_CAP && b->spine_count <= b->spine_required);
+    uint32_t held = b->spine_compact ? (uint32_t)b->spine_capacity * BARTAP_SPINE_COMPACT_PER_ITEM
+                                     : b->spine_capacity;
+    FUZZ_CHECK(b->spine_count <= held && b->spine_count <= b->spine_required);
     FUZZ_CHECK(b->title_len <= BARTAP_META_MAX && b->creator_len <= BARTAP_META_MAX);
     FUZZ_CHECK(b->language_len <= BARTAP_META_MAX && b->identifier_len <= BARTAP_META_MAX);
     FUZZ_CHECK(b->creator_count >= (b->creator_len != 0 ? 1u : 0u));
     FUZZ_CHECK(b->book_hash == bt_name_hash(BT_NAME_HASH_INIT, b->identifier, b->identifier_len));
     for (uint16_t i = 0; i < b->spine_count; i++) {
-        FUZZ_CHECK((spine[i].flags & BT_SPINE_PENDING) == 0);
-        if (spine[i].dir_offset == BARTAP_NO_DIR_OFFSET) {
+        FUZZ_CHECK((bt_spine_flags(b, i) & BT_SPINE_PENDING) == 0);
+        bartap_entry_t entry;
+        if (bt_spine_entry(b, i, &entry) != BARTAP_OK) {
             continue;
         }
-        /* the slot holds what the directory says about its entry (R22) */
-        bartap_entry_t entry;
-        FUZZ_CHECK(bt_dir_entry(&b->directory, spine[i].dir_offset, &entry) == BARTAP_OK);
-        FUZZ_CHECK(entry.local_offset == spine[i].local_offset);
-        FUZZ_CHECK(entry.uncompressed_size == spine[i].uncompressed_size);
-        FUZZ_CHECK(entry.crc32 == spine[i].crc32 && entry.method == spine[i].method);
+        /* the item's entry is what the directory says (R22) */
+        bartap_entry_t again;
+        FUZZ_CHECK(bt_dir_entry(&b->directory, entry.dir_offset, &again) == BARTAP_OK);
+        FUZZ_CHECK(again.local_offset == entry.local_offset);
+        FUZZ_CHECK(again.uncompressed_size == entry.uncompressed_size);
+        FUZZ_CHECK(again.crc32 == entry.crc32 && again.method == entry.method);
+    }
+}
+
+/* Field by field: the struct has padding, which holds whatever was there before. */
+static bool same_entry(const bartap_entry_t *x, const bartap_entry_t *y)
+{
+    return x->dir_offset == y->dir_offset && x->local_offset == y->local_offset &&
+           x->compressed_size == y->compressed_size && x->uncompressed_size == y->uncompressed_size &&
+           x->crc32 == y->crc32 && x->method == y->method;
+}
+
+/* Two books agree on everything a caller can see, and on every item's entry. */
+static void same_book(const bartap_book_t *a, const bartap_book_t *b)
+{
+    FUZZ_CHECK(a->warnings.bits == b->warnings.bits);
+    FUZZ_CHECK(a->spine_count == b->spine_count && a->spine_required == b->spine_required);
+    FUZZ_CHECK(a->book_hash == b->book_hash && a->creator_count == b->creator_count);
+    FUZZ_CHECK(a->title_len == b->title_len && memcmp(a->title, b->title, a->title_len) == 0);
+    FUZZ_CHECK(a->nav_dir_offset == b->nav_dir_offset && a->ncx_dir_offset == b->ncx_dir_offset);
+    FUZZ_CHECK(a->cover_dir_offset == b->cover_dir_offset);
+    for (uint16_t i = 0; i < a->spine_count; i++) {
+        uint32_t hash[2];
+        uint16_t len[2];
+        bt_spine_path(a, i, &hash[0], &len[0]);
+        bt_spine_path(b, i, &hash[1], &len[1]);
+        FUZZ_CHECK(hash[0] == hash[1] && len[0] == len[1]);
+        FUZZ_CHECK((bt_spine_flags(a, i) & BT_SPINE_NONLINEAR) == (bt_spine_flags(b, i) & BT_SPINE_NONLINEAR));
+        bartap_entry_t entry[2];
+        bartap_err_t err[2] = {bt_spine_entry(a, i, &entry[0]), bt_spine_entry(b, i, &entry[1])};
+        FUZZ_CHECK(err[0] == err[1]);
+        if (err[0] == BARTAP_OK) {
+            FUZZ_CHECK(same_entry(&entry[0], &entry[1]));
+        }
     }
 }
 
@@ -153,49 +195,62 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 {
     bartap_source_t source;
-    bartap_err_t err[2];
+    bartap_err_t err[M_COUNT];
 
     if (size > UINT32_MAX || bartap_source_memory(&source, data, (uint32_t)size) != BARTAP_OK) {
         return 0;
     }
-    for (int raw = 0; raw < 2; raw++) {
-        err[raw] = bartap_open(&books[raw], &source, spines[raw], SPINE_CAP, raw ? dir_buf : NULL,
-                               raw ? sizeof dir_buf : 0, &work, window, NULL, NULL);
+    err[M_NONE] = bartap_open(&books[M_NONE], &source, spines[M_NONE], SPINE_CAP, NULL, 0, &work, window,
+                              NULL, NULL);
+    err[M_RAW] = bartap_open(&books[M_RAW], &source, spines[M_RAW], SPINE_CAP, dir_bufs[0],
+                             sizeof dir_bufs[0], &work, window, NULL, NULL);
+    /* sized from the reference's directory, when it got that far */
+    uint32_t dir_size = books[M_NONE].directory.size;
+    uint32_t short_size = dir_size > 1u && dir_size - 1u < sizeof dir_bufs[1] ? dir_size - 1u : 0u;
+    uint16_t compact_cap = (uint16_t)((books[M_NONE].spine_count + 2u) / 3u);
+    err[M_HASHED] = bartap_open(&books[M_HASHED], &source, spines[M_HASHED], SPINE_CAP,
+                                short_size != 0 ? dir_bufs[1] : NULL, short_size, &work, window, NULL, NULL);
+    err[M_COMPACT] = bartap_open(&books[M_COMPACT], &source, spines[M_COMPACT], compact_cap, NULL, 0, &work,
+                                 window, NULL, NULL);
+    err[M_COMPACT_HASHED] = bartap_open(&books[M_COMPACT_HASHED], &source, spines[M_COMPACT_HASHED],
+                                        compact_cap, short_size != 0 ? dir_bufs[1] : NULL, short_size,
+                                        &work, window, NULL, NULL);
+    /* R24, R41: the modes agree on everything */
+    for (int m = 1; m < M_COUNT; m++) {
+        FUZZ_CHECK(err[m] == err[M_NONE]);
+        FUZZ_CHECK(books[m].warnings.bits == books[M_NONE].warnings.bits);
     }
-    /* R24: the modes agree on everything */
-    FUZZ_CHECK(err[0] == err[1]);
-    FUZZ_CHECK(books[0].warnings.bits == books[1].warnings.bits);
-    if (err[0] != BARTAP_OK) {
-        FUZZ_CHECK(err[0] < 0);
+    if (err[M_NONE] != BARTAP_OK) {
+        FUZZ_CHECK(err[M_NONE] < 0);
         return 0;
     }
-    const bartap_book_t *a = &books[0];
-    const bartap_book_t *b = &books[1];
-    FUZZ_CHECK(a->spine_count == b->spine_count && a->spine_required == b->spine_required);
-    FUZZ_CHECK(a->book_hash == b->book_hash && a->creator_count == b->creator_count);
-    FUZZ_CHECK(a->title_len == b->title_len && memcmp(a->title, b->title, a->title_len) == 0);
-    FUZZ_CHECK(a->nav_dir_offset == b->nav_dir_offset && a->ncx_dir_offset == b->ncx_dir_offset);
-    FUZZ_CHECK(a->cover_dir_offset == b->cover_dir_offset);
-    for (uint16_t i = 0; i < a->spine_count; i++) {
-        FUZZ_CHECK(memcmp(&spines[0][i], &spines[1][i], sizeof spines[0][i]) == 0);
-    }
-    check_book(a, spines[0]);
-    check_book(b, spines[1]);
-
-    /* every spine item reads the same in both modes, and verify agrees */
-    for (uint16_t i = 0; i < a->spine_count; i++) {
-        bartap_err_t result[2];
-        uint32_t total[2];
-        for (int raw = 0; raw < 2; raw++) {
-            bartap_err_t open = bartap_resource_open_spine(&res, &books[raw], i, window);
-            result[raw] = open == BARTAP_OK ? read_resource(raw, &total[raw]) : open;
-            if (open != BARTAP_OK) {
-                total[raw] = 0;
-            }
+    /* each mode is the one asked for: hashed whenever its index was built */
+    FUZZ_CHECK(books[M_NONE].directory.raw == NULL && books[M_NONE].directory.index == NULL);
+    FUZZ_CHECK(dir_size > sizeof dir_bufs[0] || books[M_RAW].directory.raw != NULL);
+    FUZZ_CHECK(books[M_HASHED].directory.raw == NULL);
+    FUZZ_CHECK(books[M_COMPACT].spine_compact == (books[M_NONE].spine_count > compact_cap));
+    const bartap_book_t *a = &books[M_NONE];
+    for (int m = 0; m < M_COUNT; m++) {
+        if (m != M_NONE) {
+            same_book(a, &books[m]);
         }
-        FUZZ_CHECK(result[0] == result[1] && total[0] == total[1]);
+        check_book(&books[m]);
+    }
+
+    /* every spine item reads the same in every mode, and verify agrees */
+    for (uint16_t i = 0; i < a->spine_count; i++) {
+        bartap_err_t result[M_COUNT];
+        uint32_t total[M_COUNT];
+        for (int m = 0; m < M_COUNT; m++) {
+            bartap_err_t open = bartap_resource_open_spine(&res, &books[m], i, window);
+            result[m] = open == BARTAP_OK ? read_resource(m == 0 ? 0 : 1, &total[m]) : open;
+            if (open != BARTAP_OK) {
+                total[m] = 0;
+            }
+            FUZZ_CHECK(result[m] == result[0] && total[m] == total[0]);
+            check_verify(&books[m], i, result[0]);
+        }
         FUZZ_CHECK(result[0] != BARTAP_OK);
-        check_verify(a, i, result[0]);
     }
     /* the cover, from its directory offset */
     uint32_t cover;
@@ -207,6 +262,9 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     }
     check_toc(a, size);
     check_text(a);
+    /* and through the lookups a compact item makes, against an index */
+    check_toc(&books[M_COMPACT_HASHED], size);
+    check_text(&books[M_COMPACT_HASHED]);
     return 0;
 }
 

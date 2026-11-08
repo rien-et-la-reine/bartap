@@ -150,6 +150,52 @@ set_target_properties(test_fixture_seek PROPERTIES C_EXTENSIONS OFF)
 add_dependencies(test_fixture_seek bartap_fixtures)
 add_test(NAME test_fixture_seek COMMAND test_fixture_seek ${fixture_files})
 
+# Cross checks (phase 10). They need tools not every machine has, so a missing tool skips them with
+# a note rather than failing the configure.
+find_program(BARTAP_ARM_CC arm-none-eabi-gcc)
+find_program(BARTAP_ARM_NM arm-none-eabi-nm)
+find_program(BARTAP_ARM_SIZE arm-none-eabi-size)
+find_program(BARTAP_QEMU_ARMEB qemu-armeb)
+
+# The Pico 2's Cortex-M33: symbols, sizeof each caller-owned type, code size and static frames
+# (R34, R35, R51). The report is in the test's output: ctest -R arm_cortex_m33 -V.
+if(BARTAP_ARM_CC AND BARTAP_ARM_NM AND BARTAP_ARM_SIZE)
+    add_test(NAME arm_cortex_m33
+        COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/arm/report.py ${BARTAP_ARM_CC}
+                ${BARTAP_ARM_NM} ${BARTAP_ARM_SIZE} ${PROJECT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR}/arm)
+else()
+    message(STATUS "arm-none-eabi-gcc not found: skipping the Cortex-M33 checks")
+endif()
+
+# Big-endian (R19): the fixture dump built for big-endian Arm, freestanding over a minimal libc since
+# no big-endian libc is installed, run under qemu-armeb. Every line must match the host's.
+if(BARTAP_ARM_CC AND BARTAP_QEMU_ARMEB)
+    set(be_sources ${PROJECT_SOURCE_DIR}/src/zip.c ${PROJECT_SOURCE_DIR}/src/xml.c
+        ${PROJECT_SOURCE_DIR}/src/package.c ${PROJECT_SOURCE_DIR}/src/text.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/canon.c ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/dump.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/bigendian/libc.c)
+    set(be_dump ${CMAKE_CURRENT_BINARY_DIR}/fixture_dump_be)
+    add_custom_command(OUTPUT ${be_dump}
+        COMMAND ${BARTAP_ARM_CC} -mbig-endian -marm -march=armv7ve -O2 -std=c11 -ffreestanding -nostdlib
+                -static -Wall -Wextra -Wshadow -Werror
+                -DBARTAP_INPUT_BUF=${BARTAP_INPUT_BUF} -DBARTAP_XML_READAHEAD=${BARTAP_XML_READAHEAD}
+                -I${CMAKE_CURRENT_SOURCE_DIR}/bigendian/include -I${PROJECT_SOURCE_DIR}/include
+                -I${PROJECT_SOURCE_DIR}/src -I${CMAKE_CURRENT_SOURCE_DIR} ${be_sources} -o ${be_dump}
+        DEPENDS ${be_sources}
+        COMMENT "Building the big-endian fixture dump")
+    add_custom_target(fixture_dump_be ALL DEPENDS ${be_dump})
+    file(GENERATE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/fixture_dump_be.sh
+        CONTENT "#!/bin/sh\nexec \"${BARTAP_QEMU_ARMEB}\" \"${be_dump}\" \"$@\"\n"
+        FILE_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ
+                         WORLD_EXECUTE)
+    add_test(NAME fixtures_big_endian
+        COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/prop/compare_outputs.py
+                $<TARGET_FILE:fixture_dump> ${CMAKE_CURRENT_BINARY_DIR}/fixture_dump_be.sh
+                -- ${fixture_files})
+else()
+    message(STATUS "arm-none-eabi-gcc or qemu-armeb not found: skipping the big-endian run")
+endif()
+
 # Fuzz targets, replayed over generated documents in every run, at two read-aheads. Pass files to
 # these executables to replay a corpus or a crash.
 bartap_add_sized_executable(fuzz_xml_replay "BARTAP_XML_READAHEAD=256" fuzz/fuzz_xml.c fuzz/fuzz_main.c)
@@ -167,11 +213,22 @@ bartap_add_sized_executable(fuzz_text_replay_buffers1 "BARTAP_XML_READAHEAD=1;BA
     fuzz/fuzz_text.c fuzz/fuzz_main.c)
 add_test(NAME fuzz_text_replay COMMAND fuzz_text_replay)
 add_test(NAME fuzz_text_replay_buffers1 COMMAND fuzz_text_replay_buffers1)
+bartap_add_sized_executable(fuzz_toc_replay "BARTAP_XML_READAHEAD=256" fuzz/fuzz_toc.c fuzz/fuzz_main.c)
+bartap_add_sized_executable(fuzz_toc_replay_buffers1 "BARTAP_XML_READAHEAD=1;BARTAP_INPUT_BUF=1"
+    fuzz/fuzz_toc.c fuzz/fuzz_main.c)
+add_test(NAME fuzz_toc_replay COMMAND fuzz_toc_replay)
+add_test(NAME fuzz_toc_replay_buffers1 COMMAND fuzz_toc_replay_buffers1)
+bartap_add_sized_executable(fuzz_bookmark_replay "BARTAP_XML_READAHEAD=256" fuzz/fuzz_bookmark.c
+    fuzz/fuzz_main.c)
+bartap_add_sized_executable(fuzz_bookmark_replay_buffers1 "BARTAP_XML_READAHEAD=1;BARTAP_INPUT_BUF=1"
+    fuzz/fuzz_bookmark.c fuzz/fuzz_main.c)
+add_test(NAME fuzz_bookmark_replay COMMAND fuzz_bookmark_replay)
+add_test(NAME fuzz_bookmark_replay_buffers1 COMMAND fuzz_bookmark_replay_buffers1)
 
 # libFuzzer builds, with clang: cmake -DBARTAP_FUZZ=ON -DCMAKE_C_COMPILER=clang, then run
-# build/tests/fuzz_xml corpus/ (and fuzz_xml_readahead1, fuzz_open, fuzz_text). Then replay the tokenizer's
-# corpus through xml_hash and xml_hash_readahead1 with compare_outputs.py to check R33 on what the
-# fuzzer found.
+# build/tests/fuzz_xml corpus/ (and fuzz_xml_readahead1, fuzz_open, fuzz_text, fuzz_toc,
+# fuzz_bookmark). Then replay the tokenizer's corpus through xml_hash and xml_hash_readahead1 with
+# compare_outputs.py to check R33 on what the fuzzer found.
 if(BARTAP_FUZZ)
     if(NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
         message(FATAL_ERROR "BARTAP_FUZZ needs clang for libFuzzer")
@@ -185,7 +242,7 @@ if(BARTAP_FUZZ)
         target_compile_options(${name} PRIVATE -fsanitize=fuzzer,address,undefined -g)
         target_link_options(${name} PRIVATE -fsanitize=fuzzer,address,undefined)
     endforeach()
-    foreach(target fuzz_open fuzz_text)
+    foreach(target fuzz_open fuzz_text fuzz_toc fuzz_bookmark)
         bartap_add_sized_executable(${target} "BARTAP_XML_READAHEAD=256" fuzz/${target}.c)
         target_compile_options(${target} PRIVATE -fsanitize=fuzzer,address,undefined -g)
         target_link_options(${target} PRIVATE -fsanitize=fuzzer,address,undefined)

@@ -1,6 +1,7 @@
-/* Package layer (R22-R25, R30, R41, R43, R44): href resolution, bartap_open on built EPUBs in both
- * directory modes (which must agree, R24), metadata, the spine, missing and duplicate entries,
- * packaging faults, the three-walk bound, and resources and verify reached through a book. */
+/* Package layer (R22-R25, R30, R41, R43, R44): href resolution, bartap_open on built EPUBs in every
+ * directory mode and spine layout (which must agree, R24, R41), metadata, the spine, missing and
+ * duplicate entries, packaging faults, the three-walk bound, and resources and verify reached
+ * through a book. */
 #include "check.h"
 #include "epub_build.h"
 #include "internal.h"
@@ -12,10 +13,13 @@ static epub_str_t chapter_text;
 static uint8_t window[BARTAP_WINDOW_SIZE];
 static uint8_t dir_buf[1u << 20];
 static bartap_open_work_t work;
+static uint8_t index_buf[1u << 20];
 static bartap_book_t book;
 static bartap_book_t other;
+static bartap_book_t third;
 static bartap_spine_item_t spine[SPINE_MAX];
 static bartap_spine_item_t other_spine[SPINE_MAX];
+static bartap_spine_item_t third_spine[SPINE_MAX];
 static bartap_resource_t res;
 static bartap_verify_t verify;
 static uint8_t out[1u << 18];
@@ -38,16 +42,22 @@ static int counting_read(void *user, uint32_t offset, uint8_t *buf, uint32_t len
 
 static bartap_source_t source;
 
-/* Opens the built archive. raw picks the directory mode (R24). */
-static bartap_err_t open_as(bartap_book_t *b, bartap_spine_item_t *s, uint16_t cap, bool raw)
+/* Opens the built archive with a directory buffer of buf_size bytes, NULL for none (R24). */
+static bartap_err_t open_with(bartap_book_t *b, bartap_spine_item_t *s, uint16_t cap, uint8_t *buf,
+                              uint32_t buf_size)
 {
     CHECK(bartap_source_memory(&source, epub.bytes, epub.len) == BARTAP_OK);
     source.read = counting_read;
     source_bytes = epub.bytes;
     dir_start = epub.dir_offset;
     reads_at_dir_start = 0;
-    return bartap_open(b, &source, s, cap, raw ? dir_buf : NULL, raw ? sizeof dir_buf : 0, &work,
-                       window, NULL, NULL);
+    return bartap_open(b, &source, s, cap, buf, buf_size, &work, window, NULL, NULL);
+}
+
+/* raw picks raw or none. */
+static bartap_err_t open_as(bartap_book_t *b, bartap_spine_item_t *s, uint16_t cap, bool raw)
+{
+    return open_with(b, s, cap, raw ? dir_buf : NULL, raw ? sizeof dir_buf : 0);
 }
 
 static bool same_item(const bartap_spine_item_t *a, const bartap_spine_item_t *b)
@@ -58,11 +68,71 @@ static bool same_item(const bartap_spine_item_t *a, const bartap_spine_item_t *b
            a->path_len == b->path_len && a->method == b->method && a->flags == b->flags;
 }
 
-/* Opens in both modes and checks they agree on everything; the raw-mode book is left in book. */
+/* Field by field: the struct has padding, which holds whatever was there before. */
+static bool same_entry(const bartap_entry_t *x, const bartap_entry_t *y)
+{
+    return x->dir_offset == y->dir_offset && x->local_offset == y->local_offset &&
+           x->compressed_size == y->compressed_size && x->uncompressed_size == y->uncompressed_size &&
+           x->crc32 == y->crc32 && x->method == y->method;
+}
+
+/* Everything a caller can see of two books, and every item's entry, whatever their layouts. */
+static void same_book(const bartap_book_t *a, const bartap_book_t *b)
+{
+    CHECK(a->warnings.bits == b->warnings.bits);
+    CHECK(a->spine_count == b->spine_count && a->spine_required == b->spine_required);
+    CHECK(a->nav_dir_offset == b->nav_dir_offset && a->ncx_dir_offset == b->ncx_dir_offset);
+    CHECK(a->cover_dir_offset == b->cover_dir_offset && a->book_hash == b->book_hash);
+    CHECK(a->title_len == b->title_len && memcmp(a->title, b->title, a->title_len) == 0);
+    CHECK(a->creator_len == b->creator_len && memcmp(a->creator, b->creator, a->creator_len) == 0);
+    CHECK(a->creator_count == b->creator_count);
+    CHECK(a->identifier_len == b->identifier_len &&
+          memcmp(a->identifier, b->identifier, a->identifier_len) == 0);
+    for (uint16_t i = 0; i < a->spine_count && i < b->spine_count; i++) {
+        uint32_t hash[2];
+        uint16_t len[2];
+        bt_spine_path(a, i, &hash[0], &len[0]);
+        bt_spine_path(b, i, &hash[1], &len[1]);
+        CHECK(hash[0] == hash[1] && len[0] == len[1]);
+        CHECK((bt_spine_flags(a, i) & BT_SPINE_NONLINEAR) == (bt_spine_flags(b, i) & BT_SPINE_NONLINEAR));
+        bartap_entry_t e[2];
+        bartap_err_t err[2] = {bt_spine_entry(a, i, &e[0]), bt_spine_entry(b, i, &e[1])};
+        CHECK(err[0] == err[1]);
+        CHECK(err[0] != BARTAP_OK || same_entry(&e[0], &e[1]));
+    }
+}
+
+/* Opens in every mode and checks they agree on everything; the raw-mode book is left in book. Also
+ * hashed, with a buffer one byte short of the directory, and compact, with a third of the slots
+ * (R24, R41). */
 static bartap_err_t open_both(uint16_t cap)
 {
     bartap_err_t none = open_as(&other, other_spine, cap, false);
-    CHECK(other.directory.raw == NULL);
+    CHECK(other.directory.raw == NULL && other.directory.index == NULL);
+    uint32_t short_size = other.directory.size > 1u ? other.directory.size - 1u : 0u;
+    uint16_t compact_cap = (uint16_t)((other.spine_count + 2u) / 3u);
+
+    /* hashed, full slots */
+    bartap_err_t hashed = open_with(&third, third_spine, cap, index_buf, short_size);
+    CHECK(hashed == none);
+    if (hashed == BARTAP_OK) {
+        CHECK(third.directory.raw == NULL && third.directory.index != NULL);
+        same_book(&other, &third);
+        for (uint16_t i = 0; i < other.spine_count; i++) {
+            CHECK(same_item(&other_spine[i], &third_spine[i]));
+        }
+    }
+    /* compact, with and without an index */
+    for (int indexed = 0; indexed < 2; indexed++) {
+        bartap_err_t compact = open_with(&third, third_spine, compact_cap, indexed ? index_buf : NULL,
+                                         indexed ? short_size : 0);
+        CHECK(compact == none);
+        if (compact == BARTAP_OK) {
+            CHECK(third.spine_compact == (other.spine_count > compact_cap));
+            same_book(&other, &third);
+        }
+    }
+
     bartap_err_t raw = open_as(&book, spine, cap, true);
     CHECK(none == raw);
     if (none != BARTAP_OK || raw != BARTAP_OK) {
@@ -70,21 +140,10 @@ static bartap_err_t open_both(uint16_t cap)
         return raw;
     }
     CHECK(book.directory.raw != NULL);
-    CHECK(other.warnings.bits == book.warnings.bits);
-    CHECK(other.spine_count == book.spine_count && other.spine_required == book.spine_required);
+    same_book(&other, &book);
     for (uint16_t i = 0; i < book.spine_count; i++) {
         CHECK(same_item(&other_spine[i], &spine[i]));
     }
-    CHECK(other.nav_dir_offset == book.nav_dir_offset);
-    CHECK(other.ncx_dir_offset == book.ncx_dir_offset);
-    CHECK(other.cover_dir_offset == book.cover_dir_offset);
-    CHECK(other.book_hash == book.book_hash);
-    CHECK(other.title_len == book.title_len && memcmp(other.title, book.title, book.title_len) == 0);
-    CHECK(other.creator_len == book.creator_len &&
-          memcmp(other.creator, book.creator, book.creator_len) == 0);
-    CHECK(other.creator_count == book.creator_count);
-    CHECK(other.identifier_len == book.identifier_len &&
-          memcmp(other.identifier, book.identifier, book.identifier_len) == 0);
     return raw;
 }
 
@@ -384,18 +443,35 @@ static void test_metadata(void)
     str_free(&meta);
 }
 
-/* R41: the first capacity items are kept, and the full count is always reported. */
+/* R41: more items than slots are held compact, up to three a slot; past that the first ones are
+ * kept, and the full count is always reported. */
 static void test_spine_truncation(void)
 {
     uint16_t count;
     uint32_t required;
+    bartap_entry_t entry;
 
     build_epub3();
     CHECK(open_both(2) == BARTAP_OK);
     CHECK(bartap_book_spine_count(&book, &count, &required) == BARTAP_OK);
-    CHECK(count == 2 && required == 3);
-    CHECK(bartap_book_warnings(&book) == BARTAP_WARN_SPINE_TRUNCATED);
-    CHECK(spine[1].dir_offset == entry_named("OEBPS/text/ch2.xhtml")->dir_offset);
+    CHECK(count == 3 && required == 3 && book.spine_compact);
+    CHECK(bartap_book_warnings(&book) == 0);
+    CHECK(bt_spine_entry(&book, 2, &entry) == BARTAP_OK);
+    CHECK(entry.dir_offset == entry_named("OEBPS/nav.xhtml")->dir_offset);
+    /* exactly enough slots stays full */
+    CHECK(open_both(3) == BARTAP_OK);
+    CHECK(book.spine_count == 3 && !book.spine_compact);
+
+    /* one slot holds three compact items, which is all of them */
+    CHECK(open_as(&book, spine, 1, false) == BARTAP_OK);
+    CHECK(book.spine_count == 3 && book.spine_compact && bartap_book_warnings(&book) == 0);
+    for (uint16_t i = 0; i < 3; i++) {
+        uint32_t total;
+        CHECK(bartap_resource_open_spine(&res, &book, i, window) == BARTAP_OK);
+        CHECK(read_all(&total) == BARTAP_END);
+        CHECK(bartap_verify_init(&verify, &book, i, window) == BARTAP_OK);
+    }
+    CHECK(bartap_resource_open_spine(&res, &book, 3, window) == BARTAP_ERR_ARG);
 
     /* No array at all is valid. */
     CHECK(bartap_open(&book, &source, NULL, 0, NULL, 0, &work, window, NULL, NULL) == BARTAP_OK);
@@ -422,6 +498,20 @@ static void test_spine_truncation(void)
     CHECK(book.spine_count == 300 && bartap_book_warnings(&book) == 0);
     CHECK(spine[0].dir_offset == entry_named("c299.xhtml")->dir_offset);
     CHECK(spine[299].dir_offset == entry_named("c0.xhtml")->dir_offset);
+
+    /* compact: 100 slots hold all 300, 50 slots the first 150, with the truncation warning */
+    CHECK(open_both(100) == BARTAP_OK);
+    CHECK(book.spine_count == 300 && book.spine_compact && bartap_book_warnings(&book) == 0);
+    CHECK(bt_spine_entry(&book, 0, &entry) == BARTAP_OK);
+    CHECK(entry.dir_offset == entry_named("c299.xhtml")->dir_offset);
+    CHECK(bt_spine_entry(&book, 299, &entry) == BARTAP_OK);
+    CHECK(entry.dir_offset == entry_named("c0.xhtml")->dir_offset);
+    CHECK(open_both(50) == BARTAP_OK);
+    CHECK(bartap_book_spine_count(&book, &count, &required) == BARTAP_OK);
+    CHECK(count == 150 && required == 300 && book.spine_compact);
+    CHECK(bartap_book_warnings(&book) == BARTAP_WARN_SPINE_TRUNCATED);
+    CHECK(bt_spine_entry(&book, 149, &entry) == BARTAP_OK);
+    CHECK(entry.dir_offset == entry_named("c150.xhtml")->dir_offset);
     str_free(&manifest);
     str_free(&refs);
 }

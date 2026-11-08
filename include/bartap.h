@@ -238,26 +238,47 @@ typedef struct {
     uint8_t input[BARTAP_INPUT_BUF];
 } bartap_stream_t;
 
-/* Raw when raw is non-NULL, otherwise every walk reads the card; never partial (R24). */
+/* Raw when raw is non-NULL; hashed when index is non-NULL, an index of index_count entries of
+ * BARTAP_DIR_INDEX_ENTRY bytes in directory order; otherwise none, and every walk reads the card.
+ * Never partial (R24). */
+#define BARTAP_DIR_INDEX_ENTRY 10u /* name hash, name length, directory-record offset */
+
 typedef struct {
     const bartap_source_t *source;
     const uint8_t *raw;
+    const uint8_t *index;
+    uint32_t index_count;
     uint32_t offset;
     uint32_t size;
     uint32_t count;
 } bartap_directory_t;
 
-/* A spine slot in the caller's array (R22, R41). */
+/* A compact spine item: the path alone, its entry looked up when the item is opened (R41). */
 typedef struct {
     uint32_t path_hash; /* holds the idref hash until OPF pass 2 */
-    uint32_t dir_offset;
-    uint32_t local_offset;
-    uint32_t compressed_size;
-    uint32_t uncompressed_size;
-    uint32_t crc32;
     uint16_t path_len;
-    uint8_t method;
     uint8_t flags;
+    uint8_t reserved;
+} bartap_spine_compact_t;
+
+#define BARTAP_SPINE_COMPACT_PER_ITEM 3u
+
+/* A spine slot in the caller's array (R22, R41): one full item, holding its entry's facts so it
+ * opens with no lookup, or, when the book has more items than the array has slots, several compact
+ * ones. bartap_open chooses; the caller only declares the array. */
+typedef union {
+    struct {
+        uint32_t path_hash;
+        uint32_t dir_offset;
+        uint32_t local_offset;
+        uint32_t compressed_size;
+        uint32_t uncompressed_size;
+        uint32_t crc32;
+        uint16_t path_len;
+        uint8_t method;
+        uint8_t flags;
+    };
+    bartap_spine_compact_t compact[BARTAP_SPINE_COMPACT_PER_ITEM];
 } bartap_spine_item_t;
 
 typedef struct {
@@ -348,9 +369,10 @@ typedef struct {
     uint32_t nav_dir_offset;
     uint32_t ncx_dir_offset;
     uint32_t cover_dir_offset;
-    uint16_t spine_capacity;
-    uint16_t spine_count;
+    uint16_t spine_capacity; /* slots in the caller's array */
+    uint16_t spine_count;    /* items held, full or compact */
     uint32_t spine_required; /* always reported, even when truncated (R41) */
+    bool spine_compact;      /* the array holds compact items (R41) */
     uint8_t title_len;
     uint8_t creator_len;
     uint8_t language_len;
@@ -459,6 +481,7 @@ typedef struct {
     uint32_t find_id_len;
     uint16_t spine_index;
     uint16_t base_dir_len;
+    uint32_t chapter_crc32;    /* the item's, from its entry at open: bookmarks carry it (R12) */
     uint32_t image_dir_offset; /* a queued image record's (R9) */
     uint8_t emit_state;   /* for moments that produce several records (R20) */
     uint8_t emit_next;    /* what follows a queued block start's style */
@@ -528,7 +551,13 @@ typedef struct {
 /* -- Book (R23, R24, R25, R27, R41) -- */
 
 /* dir_buf may be NULL; dir_buf and spine must outlive the book. A window belongs to this call until
- * it returns; work may be reused afterwards. warn_fn may be NULL. */
+ * it returns; work may be reused afterwards. warn_fn may be NULL.
+ *
+ * Modes are chosen here from what fits, and never change any result (R24, R41):
+ *   - dir_buf holds the whole central directory (raw), else an index of it at BARTAP_DIR_INDEX_ENTRY
+ *     bytes per entry (hashed), else nothing is buffered (none);
+ *   - spine holds the book's items in full slots, else up to BARTAP_SPINE_COMPACT_PER_ITEM compact
+ *     items per slot, each looked up in the directory when opened. */
 bartap_err_t bartap_open(bartap_book_t *book, const bartap_source_t *source,
                          bartap_spine_item_t *spine, uint16_t spine_capacity,
                          uint8_t *dir_buf, uint32_t dir_buf_size,
@@ -609,7 +638,8 @@ bartap_err_t bartap_rolling_init(bartap_rolling_t *rolling, uint8_t *ring, uint3
 
 /* -- Bookmarks (R12, R19) -- */
 
-/* Serializes byte by byte into out, BARTAP_BOOKMARK_SIZE bytes. */
+/* Serializes byte by byte into out, BARTAP_BOOKMARK_SIZE bytes. BARTAP_ERR_CORRUPT for an item with
+ * no archive entry: there is nothing to come back to. */
 bartap_err_t bartap_bookmark_write(const bartap_book_t *book, uint16_t spine_index,
                                    uint32_t block_offset, uint32_t char_offset, uint8_t *out);
 

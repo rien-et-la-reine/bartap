@@ -1,6 +1,6 @@
 /* Prints what Bartap sees in a zip file, for check_directory_zipfile.py to compare with Python's
- * zipfile (R36). Walks in raw mode and then none, and reads every entry to its end, so each real
- * file is also a test of the streams.
+ * zipfile (R36). Walks in raw mode, then none, then hashed, and reads every entry to its end, so each
+ * real file is also a test of the streams.
  *
  * One line per entry, in decimal except the name:
  *   dir_offset local compressed uncompressed crc method hash name_hex stream_result find_offset */
@@ -44,7 +44,7 @@ static int dump(const bartap_source_t *source, uint8_t *buf, uint32_t buf_size)
         return 0;
     }
     printf("directory %u %u %s\n", (unsigned)dir.offset, (unsigned)dir.size,
-           dir.raw != NULL ? "raw" : "none");
+           dir.raw != NULL ? "raw" : dir.index != NULL ? "hashed" : "none");
 
     bt_dir_begin(&dir, &cursor);
     while ((err = bt_dir_next(&dir, &cursor, &entry, &hash, &len)) == BARTAP_OK) {
@@ -110,6 +110,14 @@ int main(int argc, char **argv)
     int failed = dump(&source, buf, (uint32_t)size);
     printf("---\n");
     failed |= dump(&source, NULL, 0);
+    /* hashed: a buffer one byte short of the directory, which its index fits (R24) */
+    bartap_directory_t probe;
+    uint32_t short_size = 0;
+    if (bt_dir_init(&probe, &source, NULL, 0) == BARTAP_OK && probe.size != 0) {
+        short_size = probe.size - 1u;
+    }
+    printf("---\n");
+    failed |= dump(&source, buf, short_size);
 
     free(bytes);
     free(buf);

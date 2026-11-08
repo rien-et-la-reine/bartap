@@ -3,89 +3,158 @@ large.epub sha256 7fd4d90b7305a68d8bf842b34d11139f3c5cd2133c2974849dac6c2b886b8e
 large.epub book open=0 warn=0 items=1/1 nonlinear=- cover=-
 large.epub meta Fixture||en|urn:bartap:fixture
 large.epub item 0 dcbef66c950f73e8 end=1 warn=0 verify=0
+large.epub bookmark 0 0163c6a4c90000bf560c0001000000cc1daba636306037 read=0
 large.epub image 240410 read=1 size=21
 large.epub toc bc0e68bfbdedb3ed entries=3 end=1 warn=0
 many_items.epub sha256 624b57ba5d9f110446d5e9a4057fb6401e5a9abb468e51830f592587cee1fe8e
 many_items.epub book open=0 warn=400 items=65/65 nonlinear=1 cover=-
 many_items.epub meta Fixture||en|urn:bartap:fixture
 many_items.epub item 0 a8bbd545b55c6304 end=1 warn=0 verify=0
+many_items.epub bookmark 0 0163c6a4c90000d100000001000000568e5965956f7b75 read=0
 many_items.epub item 1 7f259c76dbb87057 end=1 warn=0 verify=0
+many_items.epub bookmark 1 0163c6a4c90100d100000001000000d4de51080e494238 read=0
 many_items.epub item 2 6ba6f9448e675794 end=1 warn=0 verify=0
+many_items.epub bookmark 2 0163c6a4c90200d100000001000000c0f1a751ab0218f8 read=0
 many_items.epub item 3 d0ea6a7fa2fe6cfa end=1 warn=0 verify=0
+many_items.epub bookmark 3 0163c6a4c90300d100000001000000d787581a73fd8f8a read=0
 many_items.epub item 4 fdee9828a74c13a2 end=1 warn=0 verify=0
+many_items.epub bookmark 4 0163c6a4c90400d1000000010000000d8df30adefe78fb read=0
 many_items.epub item 5 290c9ae9d29475a7 end=1 warn=0 verify=0
+many_items.epub bookmark 5 0163c6a4c90500d1000000010000002c6f2884ce6153bc read=0
 many_items.epub item 6 748219567b26c997 end=1 warn=0 verify=0
+many_items.epub bookmark 6 0163c6a4c90600d10000000100000069396e92cae33e56 read=0
 many_items.epub item 7 ace5aa3df02f5802 end=1 warn=0 verify=0
+many_items.epub bookmark 7 0163c6a4c90700d100000001000000e65a4123df6ae09a read=0
 many_items.epub item 8 4f48f59e649ced15 end=1 warn=0 verify=0
+many_items.epub bookmark 8 0163c6a4c90800d100000001000000747919f4949fe38b read=0
 many_items.epub item 9 c0712f8b6db84e34 end=1 warn=0 verify=0
+many_items.epub bookmark 9 0163c6a4c90900d100000001000000f7bfcedce776ee87 read=0
 many_items.epub item 10 3444bc8ea5ea1cec end=1 warn=0 verify=0
+many_items.epub bookmark 10 0163c6a4c90a00d2000000010000002eff1701202a4f0f read=0
 many_items.epub item 11 84b1ba4b88324f8a end=1 warn=0 verify=0
+many_items.epub bookmark 11 0163c6a4c90b00d200000001000000a3b76b0707ea1399 read=0
 many_items.epub item 12 698f0d3faa696f5b end=1 warn=0 verify=0
+many_items.epub bookmark 12 0163c6a4c90c00d20000000100000045cfd2cfb83890f5 read=0
 many_items.epub item 13 e613df73d2a5ac3c end=1 warn=0 verify=0
+many_items.epub bookmark 13 0163c6a4c90d00d20000000100000011fc27fd8a5ec1ab read=0
 many_items.epub item 14 bd7f7ce56f2339fe end=1 warn=0 verify=0
+many_items.epub bookmark 14 0163c6a4c90e00d200000001000000930731300a922cd0 read=0
 many_items.epub item 15 d22a328af5f7819a end=1 warn=0 verify=0
+many_items.epub bookmark 15 0163c6a4c90f00d2000000010000008ed97f32a3e7b3e8 read=0
 many_items.epub item 16 4bf34c5e646614cb end=1 warn=0 verify=0
+many_items.epub bookmark 16 0163c6a4c91000d200000001000000f948b10a8567d7af read=0
 many_items.epub item 17 a14208925965c420 end=1 warn=0 verify=0
+many_items.epub bookmark 17 0163c6a4c91100d200000001000000a441f0765029bfb4 read=0
 many_items.epub item 18 1703f970c48297aa end=1 warn=0 verify=0
+many_items.epub bookmark 18 0163c6a4c91200d200000001000000d81e0bed9808421e read=0
 many_items.epub item 19 c5b54be7e4acfcf7 end=1 warn=0 verify=0
+many_items.epub bookmark 19 0163c6a4c91300d200000001000000c866efeb4414c75a read=0
 many_items.epub item 20 32666185672e8159 end=1 warn=0 verify=0
+many_items.epub bookmark 20 0163c6a4c91400d200000001000000c65af70b62afb5d0 read=0
 many_items.epub item 21 6e0635a4341d9e5c end=1 warn=0 verify=0
+many_items.epub bookmark 21 0163c6a4c91500d20000000100000075caad693aa2865c read=0
 many_items.epub item 22 2478a58833c2ebbb end=1 warn=0 verify=0
+many_items.epub bookmark 22 0163c6a4c91600d20000000100000065594399a9faebf2 read=0
 many_items.epub item 23 fb3982edd8c5cad7 end=1 warn=0 verify=0
+many_items.epub bookmark 23 0163c6a4c91700d2000000010000000b70ee73422ff7d8 read=0
 many_items.epub item 24 4d09c8acdc00fe05 end=1 warn=0 verify=0
+many_items.epub bookmark 24 0163c6a4c91800d200000001000000b97e53f8f2ba8718 read=0
 many_items.epub item 25 2412e44d9fa8e32a end=1 warn=0 verify=0
+many_items.epub bookmark 25 0163c6a4c91900d2000000010000003b00c49d64e96f9f read=0
 many_items.epub item 26 0f696529821aaece end=1 warn=0 verify=0
+many_items.epub bookmark 26 0163c6a4c91a00d200000001000000b892d378952b9637 read=0
 many_items.epub item 27 c61cbba9d0a4b850 end=1 warn=0 verify=0
+many_items.epub bookmark 27 0163c6a4c91b00d200000001000000fb21f3153e44a742 read=0
 many_items.epub item 28 54c890e31f164be9 end=1 warn=0 verify=0
+many_items.epub bookmark 28 0163c6a4c91c00d2000000010000007a1d98a217b7f28c read=0
 many_items.epub item 29 db066f6b12be5457 end=1 warn=0 verify=0
+many_items.epub bookmark 29 0163c6a4c91d00d2000000010000009593f4056523b0f5 read=0
 many_items.epub item 30 2e759858678ffb75 end=1 warn=0 verify=0
+many_items.epub bookmark 30 0163c6a4c91e00d2000000010000009b580bda1b3abc71 read=0
 many_items.epub item 31 0aebcf30f9847eeb end=1 warn=0 verify=0
+many_items.epub bookmark 31 0163c6a4c91f00d2000000010000002b79e595433bd0ee read=0
 many_items.epub item 32 ba09e7832f17eb76 end=1 warn=0 verify=0
+many_items.epub bookmark 32 0163c6a4c92000d200000001000000cb105a104ebf647c read=0
 many_items.epub item 33 1f3fc7f37adb7e0a end=1 warn=0 verify=0
+many_items.epub bookmark 33 0163c6a4c92100d2000000010000008af23a3b49f7e4a1 read=0
 many_items.epub item 34 4213f38e77f61c88 end=1 warn=0 verify=0
+many_items.epub bookmark 34 0163c6a4c92200d200000001000000d7d858ad8ff99f9f read=0
 many_items.epub item 35 2c5e4d7f50068b37 end=1 warn=0 verify=0
+many_items.epub bookmark 35 0163c6a4c92300d2000000010000001e73ded68d9cf676 read=0
 many_items.epub item 36 f8348b762d2572c7 end=1 warn=0 verify=0
+many_items.epub bookmark 36 0163c6a4c92400d2000000010000003addf1b67b2723b0 read=0
 many_items.epub item 37 acac1ded2e4b49c2 end=1 warn=0 verify=0
+many_items.epub bookmark 37 0163c6a4c92500d200000001000000fcafba61501a4522 read=0
 many_items.epub item 38 8bcda026daeaa096 end=1 warn=0 verify=0
+many_items.epub bookmark 38 0163c6a4c92600d200000001000000455fb2b7a2b0f32c read=0
 many_items.epub item 39 afcaa3300a0da79d end=1 warn=0 verify=0
+many_items.epub bookmark 39 0163c6a4c92700d2000000010000001f6ce7bdd4a57814 read=0
 many_items.epub item 40 cbf29ce484222325 end=-2 warn=0 verify=-2
 many_items.epub item 41 8cad94e23aa8e3fd end=1 warn=0 verify=0
+many_items.epub bookmark 41 0163c6a4c92900d2000000010000008a00fe7e94e9dd8d read=0
 many_items.epub item 42 2094e518bbcbb941 end=1 warn=0 verify=0
+many_items.epub bookmark 42 0163c6a4c92a00d20000000100000071a5ece0f20c2b10 read=0
 many_items.epub item 43 8f0407f0bbee0080 end=1 warn=0 verify=0
+many_items.epub bookmark 43 0163c6a4c92b00d200000001000000368bc942c9f41f69 read=0
 many_items.epub item 44 3a7e55e2ef565bee end=1 warn=0 verify=0
+many_items.epub bookmark 44 0163c6a4c92c00d2000000010000004f283ccf43b8193b read=0
 many_items.epub item 45 5ef4eda334838cdb end=1 warn=0 verify=0
+many_items.epub bookmark 45 0163c6a4c92d00d2000000010000006c8b561f25eb6ed6 read=0
 many_items.epub item 46 c5d971106a3bae88 end=1 warn=0 verify=0
+many_items.epub bookmark 46 0163c6a4c92e00d2000000010000001b36bff2f8ed66c0 read=0
 many_items.epub item 47 1763c766aa005904 end=1 warn=0 verify=0
+many_items.epub bookmark 47 0163c6a4c92f00d20000000100000043339a631d9ae03a read=0
 many_items.epub item 48 6932bbc0d1588564 end=1 warn=0 verify=0
+many_items.epub bookmark 48 0163c6a4c93000d2000000010000007f52cc8cb2f17a25 read=0
 many_items.epub item 49 7b1e36a7d175a442 end=1 warn=0 verify=0
+many_items.epub bookmark 49 0163c6a4c93100d200000001000000bb048474b484ada2 read=0
 many_items.epub item 50 785bc9b980fd872b end=1 warn=0 verify=0
+many_items.epub bookmark 50 0163c6a4c93200d200000001000000f4ab951f99682646 read=0
 many_items.epub item 51 16f63adedb9da827 end=1 warn=0 verify=0
+many_items.epub bookmark 51 0163c6a4c93300d20000000100000023eb0cc3a32ad63f read=0
 many_items.epub item 52 eb72ada699193921 end=1 warn=0 verify=0
+many_items.epub bookmark 52 0163c6a4c93400d20000000100000061fdf468c2deccee read=0
 many_items.epub item 53 149d19d5720ef782 end=1 warn=0 verify=0
+many_items.epub bookmark 53 0163c6a4c93500d20000000100000067a4c6640d6d03d1 read=0
 many_items.epub item 54 d5fddb84c7cc4d07 end=1 warn=0 verify=0
+many_items.epub bookmark 54 0163c6a4c93600d20000000100000027698fa62842d0fb read=0
 many_items.epub item 55 2ddb8fe46d2b7706 end=1 warn=0 verify=0
+many_items.epub bookmark 55 0163c6a4c93700d200000001000000b66c4e421a276e10 read=0
 many_items.epub item 56 901b2fff5dbf68bb end=1 warn=0 verify=0
+many_items.epub bookmark 56 0163c6a4c93800d200000001000000fe51f6d981fb287f read=0
 many_items.epub item 57 213a4576f5fe00f9 end=1 warn=0 verify=0
+many_items.epub bookmark 57 0163c6a4c93900d200000001000000abda5feea9b3ec34 read=0
 many_items.epub item 58 d785c8c8450b370a end=1 warn=0 verify=0
+many_items.epub bookmark 58 0163c6a4c93a00d2000000010000007371fec0e2358a15 read=0
 many_items.epub item 59 50545f711ab36745 end=1 warn=0 verify=0
+many_items.epub bookmark 59 0163c6a4c93b00d200000001000000a49345916b473d82 read=0
 many_items.epub item 60 bff7726ba794a678 end=1 warn=0 verify=0
+many_items.epub bookmark 60 0163c6a4c93c00d200000001000000455bff2d9bb572ca read=0
 many_items.epub item 61 2ebf56714e41ae7a end=1 warn=0 verify=0
+many_items.epub bookmark 61 0163c6a4c93d00d20000000100000002eb9e2398bdbe0f read=0
 many_items.epub item 62 3b9b146bb924f796 end=1 warn=0 verify=0
+many_items.epub bookmark 62 0163c6a4c93e00d200000001000000364e61907a776912 read=0
 many_items.epub item 63 955fa0b9bd638088 end=1 warn=0 verify=0
+many_items.epub bookmark 63 0163c6a4c93f00d2000000010000001e871dc18aeb78eb read=0
 many_items.epub item 64 ac1119f8f36a8b5b end=1 warn=0 verify=0
+many_items.epub bookmark 64 0163c6a4c94000d2000000010000002d57f3ff8f4d0839 read=0
 many_items.epub toc 9e6c5342bf490f5b entries=65 end=1 warn=0
 packaging.epub sha256 68ffe0e3ba80051c3b6150ad0bcdd1ce4ab2c8203914a11964bf97a69df43e7a
 packaging.epub book open=0 warn=841 items=2/2 nonlinear=- cover=yes
 packaging.epub meta Packaging|||urn:bartap:not-unique
 packaging.epub item 0 3cab8d9b10eb0a04 end=1 warn=0 verify=0
+packaging.epub bookmark 0 017dd23de00000bf0000000100000080cfde30a07e7d63 read=0
 packaging.epub item 1 51a82fe1f8d22eb8 end=1 warn=0 verify=0
+packaging.epub bookmark 1 017dd23de00100bf0000000100000086c53419d6c6ad30 read=0
 packaging.epub image 1679 read=1 size=21
 packaging.epub toc - end=1
 records.epub sha256 f64e2952510fe501f0cd39ad78e1b35425647c66c48999f8d02813fdc261f8c1
 records.epub book open=0 warn=0 items=2/2 nonlinear=- cover=-
 records.epub meta Fixture||en|urn:bartap:fixture
 records.epub item 0 529602e3e472990a end=1 warn=0 verify=0
+records.epub bookmark 0 0163c6a4c9000049080000010000001e4690d82e6e9fcb read=0
 records.epub item 1 d7f3e5dad3e4b6e4 end=1 warn=0 verify=0
+records.epub bookmark 1 0163c6a4c90100e900000001000000908689848a3951f1 read=0
 records.epub image 3132 read=1 size=21
 records.epub image 3196 read=1 size=21
 records.epub toc e5d999fbcff32756 entries=5 end=1 warn=0
@@ -93,46 +162,63 @@ recovery.epub sha256 65a520c3c789f620a931f0ab7197690d17232f8ad4768076705173e1882
 recovery.epub book open=0 warn=0 items=5/5 nonlinear=- cover=-
 recovery.epub meta Fixture||en|urn:bartap:fixture
 recovery.epub item 0 b8ab978d0b1e8e5d end=1 warn=17c01a verify=0
+recovery.epub bookmark 0 0163c6a4c9000038040000010000004da67b918d92babc read=0
 recovery.epub item 1 466cbc7a0d923a88 end=1 warn=0 verify=0
+recovery.epub bookmark 1 0163c6a4c90100c2000000010000009db4715fb6cf1380 read=0
 recovery.epub item 2 e5727a5ae9b0e227 end=1 warn=4 verify=0
+recovery.epub bookmark 2 0163c6a4c90200bf00000001000000b6d83013f30361e6 read=0
 recovery.epub item 3 cbf29ce484222325 end=-3 warn=0 verify=0
 recovery.epub item 4 47c014620de2ec25 end=1 warn=80000 verify=0
+recovery.epub bookmark 4 0163c6a4c90400c4000000010000001319d29f9a26e529 read=0
 recovery.epub toc - end=1
 stored.epub sha256 a60d355537359e043eb0e9670fb10253a7ee1987ec09c01712f10720e64e2203
 stored.epub book open=0 warn=0 items=2/2 nonlinear=- cover=-
 stored.epub meta Fixture||en|urn:bartap:fixture
 stored.epub item 0 4c1d1fa2275e6f99 end=1 warn=0 verify=0
+stored.epub bookmark 0 0163c6a4c90000d50000000100000008c3391d41a0ce1e read=0
 stored.epub item 1 10df3a872d346377 end=1 warn=0 verify=0
+stored.epub bookmark 1 0163c6a4c90100cb00000001000000202814c3796298e7 read=0
 stored.epub image 3018 read=1 size=21
 stored.epub toc 707a25f06e45e0b4 entries=2 end=1 warn=0
 toc_faults.epub sha256 db0aeb0e3d16aeb76c99d31bec7223e138d01ce8cd2839f119b82c0ea4af34ea
 toc_faults.epub book open=0 warn=0 items=1/1 nonlinear=- cover=-
 toc_faults.epub meta Fixture||en|urn:bartap:fixture
 toc_faults.epub item 0 3c8370491b87455f end=1 warn=0 verify=0
+toc_faults.epub bookmark 0 0163c6a4c90000cb00000001000000f17159c21249c2b5 read=0
 toc_faults.epub toc cbb61537002e008b entries=5 end=1 warn=2000
 toc_faults_ncx.epub sha256 16d51e4bd843f5c848cfd4e41d404b8234f6d50bc211c4a3a44d2ca63f4b4cbc
 toc_faults_ncx.epub book open=0 warn=0 items=1/1 nonlinear=- cover=-
 toc_faults_ncx.epub meta Fixture||en|urn:bartap:fixture
 toc_faults_ncx.epub item 0 3c8370491b87455f end=1 warn=0 verify=0
+toc_faults_ncx.epub bookmark 0 0163c6a4c90000cb00000001000000f17159c21249c2b5 read=0
 toc_faults_ncx.epub toc 086e53194ae3d58a entries=4 end=1 warn=2000
 toc_nav.epub sha256 692c77b1453ea2c13503c9503bdd4b6f5a41786b1f5fce229c499d7e434d0f55
 toc_nav.epub book open=0 warn=0 items=4/4 nonlinear=- cover=-
 toc_nav.epub meta Fixture||en|urn:bartap:fixture
 toc_nav.epub item 0 2eb67e04d07f95cc end=1 warn=0 verify=0
+toc_nav.epub bookmark 0 0163c6a4c900000001000001000000fb90bfef20b81cdf read=0
 toc_nav.epub item 1 99a91015f689013f end=1 warn=0 verify=0
+toc_nav.epub bookmark 1 0163c6a4c90100d40000000100000015d91c27e9ad5985 read=0
 toc_nav.epub item 2 64f7f1aaf6bd6808 end=1 warn=0 verify=0
+toc_nav.epub bookmark 2 0163c6a4c90200e8000000010000006c662310bf2a4dd0 read=0
 toc_nav.epub item 3 5c944c633faefd25 end=1 warn=0 verify=0
+toc_nav.epub bookmark 3 0163c6a4c90300bf00000001000000594513e08f4ca49a read=0
 toc_nav.epub toc 990a41eca3709307 entries=10 end=1 warn=0
 toc_ncx.epub sha256 e02b5dab727ff8fdcae079b98025a11d2c55194fe7b191f8151bb60d681374c2
 toc_ncx.epub book open=0 warn=0 items=4/4 nonlinear=- cover=-
 toc_ncx.epub meta Fixture||en|urn:bartap:fixture
 toc_ncx.epub item 0 2eb67e04d07f95cc end=1 warn=0 verify=0
+toc_ncx.epub bookmark 0 0163c6a4c900000001000001000000fb90bfef20b81cdf read=0
 toc_ncx.epub item 1 99a91015f689013f end=1 warn=0 verify=0
+toc_ncx.epub bookmark 1 0163c6a4c90100d40000000100000015d91c27e9ad5985 read=0
 toc_ncx.epub item 2 64f7f1aaf6bd6808 end=1 warn=0 verify=0
+toc_ncx.epub bookmark 2 0163c6a4c90200e8000000010000006c662310bf2a4dd0 read=0
 toc_ncx.epub item 3 5c944c633faefd25 end=1 warn=0 verify=0
+toc_ncx.epub bookmark 3 0163c6a4c90300bf00000001000000594513e08f4ca49a read=0
 toc_ncx.epub toc 990a41eca3709307 entries=10 end=1 warn=0
 zip64.epub sha256 6f49ebe9a0b1075988b7ae4ba90bec592035944d982d8212483cdbe9784c1b42
 zip64.epub book open=0 warn=0 items=1/1 nonlinear=- cover=-
 zip64.epub meta Fixture||en|urn:bartap:fixture
 zip64.epub item 0 3a17d9c99dadc971 end=1 warn=0 verify=0
+zip64.epub bookmark 0 0163c6a4c90000bf00000001000000a6054f8e62bc5ef4 read=0
 zip64.epub toc - end=1

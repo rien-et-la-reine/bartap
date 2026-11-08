@@ -796,18 +796,27 @@ static bartap_err_t find_end_record(const bartap_source_t *source, bt_end_values
     return saw_unsupported ? BARTAP_ERR_UNSUPPORTED : BARTAP_ERR_CORRUPT;
 }
 
-// Locates the central directory and chooses raw or card-backed access up front. dir is only written
-// on success.
+static bool build_index(bartap_directory_t *dir, uint8_t *buf, uint32_t buf_size);
+
+// Locates the central directory and chooses its mode up front: raw if it fits the buffer, hashed if
+// an index of it does, else none (R24). dir is only written on success.
 bartap_err_t bt_dir_init(bartap_directory_t *dir, const bartap_source_t *source, uint8_t *buf,
                          uint32_t buf_size)
 {
     bt_end_values_t values;
-    const uint8_t *raw = NULL;
+    bartap_directory_t found;
 
     bartap_err_t err = find_end_record(source, &values);
     if (err != BARTAP_OK) {
         return err;
     }
+    found.source = source;
+    found.raw = NULL;
+    found.index = NULL;
+    found.index_count = 0;
+    found.offset = values.offset;
+    found.size = values.size;
+    found.count = values.count;
 
     // A directory that does not fit is never partly buffered (R24).
     if (buf != NULL && values.size <= buf_size) {
@@ -815,14 +824,12 @@ bartap_err_t bt_dir_init(bartap_directory_t *dir, const bartap_source_t *source,
         if (err != BARTAP_OK) {
             return err;
         }
-        raw = buf;
+        found.raw = buf;
+    } else if (buf != NULL) {
+        // an index, or nothing if even that doesn't fit
+        (void)build_index(&found, buf, buf_size);
     }
-
-    dir->source = source;
-    dir->raw = raw;
-    dir->offset = values.offset;
-    dir->size = values.size;
-    dir->count = values.count;
+    *dir = found;
     return BARTAP_OK;
 }
 
@@ -1068,6 +1075,52 @@ bartap_err_t bt_dir_next(const bartap_directory_t *dir, bt_dir_cursor_t *cursor,
     return BARTAP_OK;
 }
 
+// Hashed mode's index, one entry per record in directory order: name hash, name length and the
+// record's offset, little-endian (R19, R24).
+static void index_put(uint8_t *at, uint32_t name_hash, uint16_t name_len, uint32_t dir_offset)
+{
+    bt_put_le32(at, name_hash);
+    bt_put_le16(at + 4, name_len);
+    bt_put_le32(at + 6, dir_offset);
+}
+
+static void index_get(const uint8_t *at, uint32_t *name_hash, uint16_t *name_len, uint32_t *dir_offset)
+{
+    *name_hash = bt_get_le32(at);
+    *name_len = bt_get_le16(at + 4);
+    *dir_offset = bt_get_le32(at + 6);
+}
+
+// Walks the directory from the card once, writing the index into buf. false, with dir left in none
+// mode, if the index doesn't fit or a record is bad: never a partial index (R24). A bad record then
+// fails the walks that reach it, as it would have without an index.
+static bool build_index(bartap_directory_t *dir, uint8_t *buf, uint32_t buf_size)
+{
+    bt_dir_cursor_t cursor;
+    bartap_entry_t entry;
+    uint32_t name_hash;
+    uint16_t name_len;
+    uint32_t count = 0;
+    bartap_err_t err;
+
+    // walked in none mode, the index isn't there yet
+    bt_dir_begin(dir, &cursor);
+    while ((err = bt_dir_next(dir, &cursor, &entry, &name_hash, &name_len)) == BARTAP_OK) {
+        if (count >= buf_size / BARTAP_DIR_INDEX_ENTRY) {
+            // more entries than fit
+            return false;
+        }
+        index_put(buf + count * BARTAP_DIR_INDEX_ENTRY, name_hash, name_len, entry.dir_offset);
+        count++;
+    }
+    if (err != BARTAP_END) {
+        return false;
+    }
+    dir->index = buf;
+    dir->index_count = count;
+    return true;
+}
+
 // Loads the entry at a directory-record offset, which may be untrusted.
 bartap_err_t bt_dir_entry(const bartap_directory_t *dir, uint32_t dir_offset, bartap_entry_t *entry)
 {
@@ -1144,6 +1197,26 @@ bartap_err_t bt_dir_find(const bartap_directory_t *dir, const char *name, uint16
     uint16_t len;
     bartap_err_t err;
 
+    if (dir->index != NULL) {
+        // hashed mode: the index in directory order, so the first match still wins (R44), and only
+        // a candidate's record is read
+        for (uint32_t i = 0; i < dir->index_count; i++) {
+            uint32_t record;
+            index_get(dir->index + i * BARTAP_DIR_INDEX_ENTRY, &hash, &len, &record);
+            if (len != name_len || hash != want) {
+                continue;
+            }
+            bool matches;
+            err = name_matches(dir, record, name, name_len, &matches);
+            if (err != BARTAP_OK) {
+                return err;
+            }
+            if (matches) {
+                return bt_dir_entry(dir, record, entry);
+            }
+        }
+        return BARTAP_END;
+    }
     // walk in directory order, so the first match wins (R44)
     bt_dir_begin(dir, &cursor);
     while ((err = bt_dir_next(dir, &cursor, &candidate, &hash, &len)) == BARTAP_OK) {
@@ -1165,6 +1238,38 @@ bartap_err_t bt_dir_find(const bartap_directory_t *dir, const char *name, uint16
         }
     }
     // BARTAP_END if nothing matched, otherwise the walk's failure
+    return err;
+}
+
+// The first entry whose name hash and length match, with no name to compare: the open walk's rule
+// for spine items (R22), so a compact item finds the entry a full one would have held (R41).
+bartap_err_t bt_dir_find_hash(const bartap_directory_t *dir, uint32_t name_hash, uint16_t name_len,
+                              bartap_entry_t *entry)
+{
+    bt_dir_cursor_t cursor;
+    bartap_entry_t candidate;
+    uint32_t hash;
+    uint16_t len;
+    bartap_err_t err;
+
+    if (dir->index != NULL) {
+        // hashed mode: one record read
+        for (uint32_t i = 0; i < dir->index_count; i++) {
+            uint32_t record;
+            index_get(dir->index + i * BARTAP_DIR_INDEX_ENTRY, &hash, &len, &record);
+            if (len == name_len && hash == name_hash) {
+                return bt_dir_entry(dir, record, entry);
+            }
+        }
+        return BARTAP_END;
+    }
+    bt_dir_begin(dir, &cursor);
+    while ((err = bt_dir_next(dir, &cursor, &candidate, &hash, &len)) == BARTAP_OK) {
+        if (len == name_len && hash == name_hash) {
+            *entry = candidate;
+            return BARTAP_OK;
+        }
+    }
     return err;
 }
 
@@ -1350,13 +1455,43 @@ static bartap_err_t stream_fail(bartap_stream_t *stream, bartap_err_t err)
     return err;
 }
 
-// The entry facts a spine slot already holds, copied from its directory record when the book
-// opened (R22), so a spine lookup needs no directory read.
+void bt_spine_path(const bartap_book_t *book, uint16_t spine_index, uint32_t *path_hash,
+                   uint16_t *path_len)
+{
+    if (book->spine_compact) {
+        const bartap_spine_compact_t *item = BT_SPINE_COMPACT(book->spine, spine_index);
+        *path_hash = item->path_hash;
+        *path_len = item->path_len;
+    } else {
+        *path_hash = book->spine[spine_index].path_hash;
+        *path_len = book->spine[spine_index].path_len;
+    }
+}
+
+uint8_t bt_spine_flags(const bartap_book_t *book, uint16_t spine_index)
+{
+    return book->spine_compact ? BT_SPINE_COMPACT(book->spine, spine_index)->flags
+                               : book->spine[spine_index].flags;
+}
+
+// A spine item's entry. A full item holds the facts, copied from its directory record when the
+// book opened (R22), so it needs no directory read; a compact one is looked up by its path (R41).
 bartap_err_t bt_spine_entry(const bartap_book_t *book, uint16_t spine_index, bartap_entry_t *entry)
 {
     if (spine_index >= book->spine_count) {
         // past the spine the book holds, the caller's mistake
         return BARTAP_ERR_ARG;
+    }
+    if (book->spine_compact) {
+        const bartap_spine_compact_t *compact = BT_SPINE_COMPACT(book->spine, spine_index);
+        if ((compact->flags & BT_SPINE_FOUND) == 0) {
+            // no archive entry matched it at open, already warned about. the book is damaged
+            return BARTAP_ERR_CORRUPT;
+        }
+        bartap_err_t err = bt_dir_find_hash(&book->directory, compact->path_hash, compact->path_len,
+                                            entry);
+        // it matched at open, so not finding it now is the card or the directory failing
+        return err == BARTAP_END ? BARTAP_ERR_CORRUPT : err;
     }
     // copy the facts across, the path hash and name length aren't part of an entry
     const bartap_spine_item_t *item = &book->spine[spine_index];

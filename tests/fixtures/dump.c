@@ -4,13 +4,15 @@
  *   <file> book open=<err> warn=<hex> items=<count>/<required> nonlinear=<indexes> cover=<yes|->
  *   <file> meta <title>|<creator>|<language>|<identifier>
  *   <file> item <i> <hash> end=<err> warn=<hex> verify=<err>
+ *   <file> bookmark <i> <bytes in hex> read=<err>   (at the item's last block start, character 1)
  *   <file> image <dir_offset> read=<err> size=<bytes>
  *   <file> toc <hash> entries=<count> end=<err> warn=<hex>
  *
  * The lines are the evidence other checks compare: builds with other buffer sizes must print the same
  * (R33), and the hashes are the host's half of R51. The tool checks some agreement itself and exits 1
- * on a difference: raw and no directory buffer (R24), stream and memory mode (R11), and text buffers
- * of 4, 7 and 4096 bytes (R6, R50). */
+ * on a difference: every directory mode (none, raw, hashed) and spine layout (full, compact) print
+ * the same (R24, R41), as do stream and memory mode (R11) and text buffers of 4, 7 and 4096 bytes
+ * (R6, R50). */
 #include <inttypes.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -45,7 +47,11 @@ typedef struct {
     size_t n;
 } out_t;
 
-static out_t outs[2];
+/* The modes each book is dumped in, the first printed. Hashed gets a buffer one byte short of the
+ * directory and compact a third of the slots the book needs, both sized from the first. */
+enum { M_NONE, M_RAW, M_HASHED, M_COMPACT, M_COMPACT_HASHED, M_COUNT };
+static const char *const mode_names[M_COUNT] = {"none", "raw", "hashed", "compact", "compact hashed"};
+static out_t outs[M_COUNT];
 static bool failed;
 
 static void put(out_t *o, const char *fmt, ...)
@@ -86,6 +92,8 @@ typedef struct {
     uint64_t hash;
     canon_stream_t stream;
     uint32_t records;
+    uint32_t last_block;  /* the last block start's offset */
+    bool has_block;
     uint32_t images[IMAGES_MAX];
     uint32_t image_n;
 } hasher_t;
@@ -101,6 +109,10 @@ static void hash_begin(hasher_t *h)
 static void hash_record(hasher_t *h, const bartap_record_t *r)
 {
     h->records++;
+    if (r->kind == BARTAP_REC_BLOCK_START) {
+        h->last_block = r->block.block_offset;
+        h->has_block = true;
+    }
     if (!canon_stream_record(&h->stream, r)) {
         fprintf(stderr, "record of kind %d has no canonical form\n", (int)r->kind);
         failed = true;
@@ -188,6 +200,8 @@ static void dump_item(out_t *o, const char *name, uint16_t i, uint32_t *images, 
 {
     static hasher_t h;
     reading_t first = read_item(i, NULL, 0, caps[0], &h);
+    uint32_t last_block = h.last_block;
+    bool has_block = h.has_block;
 
     /* gather the item's images for reading later */
     for (uint32_t k = 0; k < h.image_n; k++) {
@@ -218,6 +232,23 @@ static void dump_item(out_t *o, const char *name, uint16_t i, uint32_t *images, 
     }
     put(o, "%s item %u %016" PRIx64 " end=%d warn=%x verify=%d\n", name, i, first.hash, first.end,
         first.warn, verify_item(i));
+
+    /* the serialized bytes, byte order and all (R12, R19), and that they read back */
+    if (has_block) {
+        uint8_t bytes[BARTAP_BOOKMARK_SIZE];
+        bartap_bookmark_t back;
+        bartap_err_t err = bartap_bookmark_write(&book, i, last_block, 1, bytes);
+        put(o, "%s bookmark %u ", name, i);
+        for (uint32_t k = 0; k < sizeof bytes; k++) {
+            put(o, "%02x", err == BARTAP_OK ? bytes[k] : 0u);
+        }
+        bartap_err_t read = err == BARTAP_OK ? bartap_bookmark_read(&book, bytes, &back) : err;
+        if (read == BARTAP_OK && (back.spine_index != i || back.block_offset != last_block ||
+                                  back.char_offset != 1)) {
+            mismatch(name, "bookmark round trip, item", i);
+        }
+        put(o, " read=%d\n", read);
+    }
 }
 
 /* ---- The TOC ---- */
@@ -254,7 +285,8 @@ static void dump_toc(out_t *o, const char *name)
 
 /* ---- One book ---- */
 
-static void dump_book(out_t *o, const char *name, uint32_t size, bool raw)
+static void dump_book(out_t *o, const char *name, uint32_t size, uint8_t *buf, uint32_t buf_size,
+                      uint16_t spine_cap)
 {
     static uint32_t images[IMAGES_MAX];
     uint32_t image_n = 0;
@@ -266,8 +298,7 @@ static void dump_book(out_t *o, const char *name, uint32_t size, bool raw)
         put(o, "%s source refused\n", name);
         return;
     }
-    bartap_err_t err = bartap_open(&book, &src, spine, SPINE_MAX, raw ? dir_buf : NULL,
-                                   raw ? (uint32_t)sizeof dir_buf : 0, &work, window, NULL, NULL);
+    bartap_err_t err = bartap_open(&book, &src, spine, spine_cap, buf, buf_size, &work, window, NULL, NULL);
     if (err != BARTAP_OK) {
         put(o, "%s book open=%d\n", name, err);
         return;
@@ -349,10 +380,30 @@ int main(int argc, char **argv)
         }
         /* the name without its directory, so lines don't depend on where the build is */
         const char *name = strrchr(argv[a], '/') != NULL ? strrchr(argv[a], '/') + 1 : argv[a];
-        dump_book(&outs[0], name, (uint32_t)size, false);
-        dump_book(&outs[1], name, (uint32_t)size, true);
-        if (outs[0].n != outs[1].n || memcmp(outs[0].s, outs[1].s, outs[0].n) != 0) {
-            mismatch(name, "directory mode raw against none, book", 0);
+        dump_book(&outs[M_NONE], name, (uint32_t)size, NULL, 0, SPINE_MAX);
+        uint32_t dir_size = book.directory.size;
+        uint32_t short_size = dir_size > 1u ? dir_size - 1u : 0u;
+        uint16_t compact_cap = (uint16_t)((book.spine_count + 2u) / 3u);
+        bool opened = book.spine_count != 0 || book.directory.size != 0;
+        for (int m = M_RAW; m < M_COUNT; m++) {
+            bool hashed = m == M_HASHED || m == M_COMPACT_HASHED;
+            bool compact = m == M_COMPACT || m == M_COMPACT_HASHED;
+            uint8_t *buf = m == M_RAW || (hashed && short_size != 0) ? dir_buf : NULL;
+            uint32_t buf_size = m == M_RAW ? (uint32_t)sizeof dir_buf : hashed ? short_size : 0u;
+            dump_book(&outs[m], name, (uint32_t)size, buf, buf_size, compact ? compact_cap : SPINE_MAX);
+            if (outs[0].n != outs[m].n || memcmp(outs[0].s, outs[m].s, outs[0].n) != 0) {
+                fprintf(stderr, "%s: %s mode differs from none\n", name, mode_names[m]);
+                failed = true;
+            }
+            /* and it was that mode */
+            bool got = m == M_RAW ? book.directory.raw != NULL
+                       : hashed   ? book.directory.index != NULL || short_size == 0
+                                  : true;
+            got = got && (!compact || book.spine_compact == (book.spine_count > compact_cap));
+            if (opened && !got) {
+                fprintf(stderr, "%s: %s mode not taken\n", name, mode_names[m]);
+                failed = true;
+            }
         }
         fputs(outs[0].s, stdout);
     }

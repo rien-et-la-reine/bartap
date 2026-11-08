@@ -584,8 +584,12 @@ static void test_io_failures(void)
 #define METHOD_UNSUPPORTED 0xFFu
 #define RECORD_SIGNATURE 0x02014B50u
 
-static bool mode_raw;
+/* The directory mode the record tests run in (R24). Hashed gets a buffer one byte short of the
+ * directory, which an index of well-formed records always fits. */
+enum { MODE_NONE, MODE_RAW, MODE_HASHED, MODE_COUNT };
+static int dir_mode;
 static uint32_t dir_start;
+static uint32_t dir_size;
 static uint32_t record_count;
 
 typedef struct {
@@ -639,8 +643,8 @@ static uint32_t add_record(const record_t *r)
 
 static void end_directory_with_count(uint32_t count)
 {
-    uint32_t size = archive_len - dir_start;
-    add_end(count, size, dir_start, 0);
+    dir_size = archive_len - dir_start;
+    add_end(count, dir_size, dir_start, 0);
 }
 
 static void end_directory(void)
@@ -653,9 +657,17 @@ static void open_directory(bartap_directory_t *dir, bartap_source_t *source)
     static uint8_t buf[sizeof archive];
 
     CHECK(bartap_source_memory(source, archive, archive_len) == BARTAP_OK);
-    CHECK(bt_dir_init(dir, source, mode_raw ? buf : NULL, mode_raw ? (uint32_t)sizeof buf : 0) ==
-          BARTAP_OK);
-    CHECK((dir->raw != NULL) == mode_raw);
+    uint32_t size = dir_mode == MODE_RAW ? (uint32_t)sizeof buf : 0u;
+    if (dir_mode == MODE_HASHED) {
+        /* the directory's size, from an unbuffered look first */
+        CHECK(bt_dir_init(dir, source, NULL, 0) == BARTAP_OK);
+        size = dir->size != 0 ? dir->size - 1u : 0u;
+    }
+    CHECK(bt_dir_init(dir, source, dir_mode == MODE_NONE ? NULL : buf, size) == BARTAP_OK);
+    /* an empty directory fits any buffer, so it's raw even in hashed mode */
+    CHECK((dir->raw != NULL) == (dir_mode == MODE_RAW || (dir_mode == MODE_HASHED && dir->size == 0)));
+    /* hashed falls back to none on a bad record, so only its absence elsewhere is certain */
+    CHECK(dir_mode == MODE_HASHED || dir->index == NULL);
 }
 
 static void test_walk(void)
@@ -1103,6 +1115,7 @@ static void test_find(void)
     uint32_t at_sign = add_record(&(record_t){.name = "[a]@"});
     end_directory();
     open_directory(&dir, &source);
+    CHECK((dir.index != NULL) == (dir_mode == MODE_HASHED));
 
     check_find(&dir, "META-INF/container.xml", BARTAP_OK, container);
     check_find(&dir, "meta-inf/CONTAINER.XML", BARTAP_OK, container); /* R43 */
@@ -1128,6 +1141,16 @@ static void test_find(void)
     check_find(&dir, "OEBPS/Text.xhtm", BARTAP_END, 0);
     check_find(&dir, "OEBPS/Text.xhtmlx", BARTAP_END, 0);
     check_find(&dir, "", BARTAP_END, 0);
+
+    /* By hash and length alone, as spine items match (R22, R41): the first of a colliding pair,
+     * the first of names that differ only in case, nothing for a length that differs. */
+    bartap_entry_t entry;
+    CHECK(bt_dir_find_hash(&dir, bt_name_hash(BT_NAME_HASH_INIT, "ab3tea", 6), 6, &entry) == BARTAP_OK);
+    CHECK(entry.dir_offset == collision_a);
+    CHECK(bt_dir_find_hash(&dir, bt_name_hash(BT_NAME_HASH_INIT, "oebps/text.xhtml", 16), 16, &entry) ==
+          BARTAP_OK);
+    CHECK(entry.dir_offset == first);
+    CHECK(bt_dir_find_hash(&dir, bt_name_hash(BT_NAME_HASH_INIT, "ab3tea", 6), 7, &entry) == BARTAP_END);
 
     /* The hash matches and the name does not: the walk must carry on to the real one. */
     begin_directory();
@@ -1182,6 +1205,68 @@ static void test_find(void)
     open_directory(&dir, &source);
     check_find(&dir, "anything", BARTAP_END, 0);
 }
+
+/* Hashed (R24): an index of every record, in directory order, when the directory doesn't fit but
+ * the index does. Never partial: one entry short of room, or a bad record, leaves none. */
+static void test_index(void)
+{
+    static uint8_t buf[4096];
+    bartap_source_t source;
+    bartap_directory_t dir;
+    uint32_t offsets[5];
+    static const char *const names[5] = {"mimetype", "a/b.xhtml", "C.png", "a/b.xhtml", ""};
+
+    begin_directory();
+    for (int i = 0; i < 5; i++) {
+        offsets[i] = add_record(&(record_t){.name = names[i]});
+    }
+    end_directory();
+    CHECK(bartap_source_memory(&source, archive, archive_len) == BARTAP_OK);
+
+    /* exactly room for five entries */
+    memset(buf, 0xAA, sizeof buf);
+    CHECK(bt_dir_init(&dir, &source, buf, 5u * BARTAP_DIR_INDEX_ENTRY) == BARTAP_OK);
+    CHECK(dir.raw == NULL && dir.index == buf && dir.index_count == 5);
+    for (int i = 0; i < 5; i++) {
+        const uint8_t *e = buf + (uint32_t)i * BARTAP_DIR_INDEX_ENTRY;
+        uint32_t len = (uint32_t)strlen(names[i]);
+        CHECK(bt_get_le32(e) == bt_name_hash(BT_NAME_HASH_INIT, names[i], len));
+        CHECK(bt_get_le16(e + 4) == len);
+        CHECK(bt_get_le32(e + 6) == offsets[i]);
+    }
+    /* nothing written past it */
+    CHECK(buf[5u * BARTAP_DIR_INDEX_ENTRY] == 0xAA);
+    /* the first of a duplicate wins, as in a walk (R44) */
+    bartap_entry_t entry;
+    CHECK(bt_dir_find(&dir, "A/B.xhtml", 9, &entry) == BARTAP_OK && entry.dir_offset == offsets[1]);
+    CHECK(bt_dir_find(&dir, "c.PNG", 5, &entry) == BARTAP_OK && entry.dir_offset == offsets[2]);
+    CHECK(bt_dir_find(&dir, "", 0, &entry) == BARTAP_OK && entry.dir_offset == offsets[4]);
+    CHECK(bt_dir_find(&dir, "nope", 4, &entry) == BARTAP_END);
+
+    /* one byte short of five entries: no index at all */
+    CHECK(bt_dir_init(&dir, &source, buf, 5u * BARTAP_DIR_INDEX_ENTRY - 1u) == BARTAP_OK);
+    CHECK(dir.raw == NULL && dir.index == NULL);
+    CHECK(bt_dir_find(&dir, "C.png", 5, &entry) == BARTAP_OK && entry.dir_offset == offsets[2]);
+
+    /* a bad record: none, and lookups fail as they would have without the buffer */
+    put32(offsets[3], RECORD_SIGNATURE ^ 1u);
+    CHECK(bt_dir_init(&dir, &source, buf, dir_size - 1u) == BARTAP_OK);
+    CHECK(dir.raw == NULL && dir.index == NULL);
+    CHECK(bt_dir_find(&dir, "C.png", 5, &entry) == BARTAP_OK);
+    CHECK(bt_dir_find(&dir, "nope", 4, &entry) == BARTAP_ERR_CORRUPT);
+    put32(offsets[3], RECORD_SIGNATURE);
+
+    /* the index is read after init, not the card: a miss reads nothing, a candidate reads its name
+     * and a hash-only hit its record, both now zeros */
+    CHECK(bt_dir_init(&dir, &source, buf, dir_size - 1u) == BARTAP_OK);
+    CHECK(dir.index == buf);
+    memset(archive + dir_start, 0, dir_size);
+    CHECK(bt_dir_find(&dir, "nope", 4, &entry) == BARTAP_END);
+    CHECK(bt_dir_find_hash(&dir, 0x12345678u, 3, &entry) == BARTAP_END);
+    CHECK(bt_dir_find(&dir, "C.png", 5, &entry) == BARTAP_END);
+    CHECK(bt_dir_find_hash(&dir, bt_name_hash(BT_NAME_HASH_INIT, "C.png", 5), 5, &entry) == BARTAP_ERR_CORRUPT);
+}
+
 
 /* Long names cross the chunks they are read in, so try every length around the edges. */
 static void test_long_names(void)
@@ -1280,8 +1365,7 @@ static void test_walk_io_failures(void)
 
 int main(void)
 {
-    for (int raw = 0; raw < 2; raw++) {
-        mode_raw = raw != 0;
+    for (dir_mode = 0; dir_mode < MODE_COUNT; dir_mode++) {
         test_walk();
         test_wrong_count();
         test_bad_records();
@@ -1303,6 +1387,7 @@ int main(void)
     test_zip64();
     test_placeholder_without_zip64();
     test_modes();
+    test_index();
     test_io_failures();
     return CHECK_RESULT();
 }

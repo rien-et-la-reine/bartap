@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Compare Bartap's view of real zip files with Python's zipfile, the reference (R36).
 
-Also requires raw and none modes to agree (R24), the first match to win (R44), and every readable
+Also requires raw, none and hashed modes to agree (R24), the first match to win (R44), and every readable
 entry to reach END through a stream, which proves its bytes against its CRC (R31).
 
 Usage: check_directory_zipfile.py DUMP
@@ -59,14 +59,21 @@ def check(dump: str, label: str, path: Path) -> list[str]:
         output = result.stdout[-400:] + result.stderr[-400:]
         return [f"{label}: dump failed ({result.returncode}): {output}"]
 
-    raw, none = result.stdout.split("---\n")
+    raw, none, hashed = result.stdout.split("---\n")
     raw_lines = raw.splitlines()
     none_lines = none.splitlines()
+    hashed_lines = hashed.splitlines()
     errors = []
 
     # Identical apart from the mode's own name in the first line (R24).
     if raw_lines[1:] != none_lines[1:]:
         errors.append(f"{label}: raw and none disagree")
+    if raw_lines[1:] != hashed_lines[1:]:
+        errors.append(f"{label}: raw and hashed disagree")
+    # an empty directory fits the empty buffer whole
+    want_hashed = "raw" if size == 0 else "hashed"
+    if hashed_lines[0] != f"directory {start} {size} {want_hashed}":
+        errors.append(f"{label}: hashed directory line {hashed_lines[0]!r}, want {start} {size}")
     if raw_lines[0] != f"directory {start} {size} raw":
         errors.append(f"{label}: raw directory line {raw_lines[0]!r}, want {start} {size}")
     if none_lines[0] != f"directory {start} {size} none":

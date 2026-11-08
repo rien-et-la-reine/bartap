@@ -286,7 +286,7 @@ static inline bool same_raw(const seek_out_t *a, const seek_out_t *b)
 }
 
 /* P2 at one point: the restated context, then exactly the straight read from the point on. */
-static bool p2_holds(const point_t *p, const seek_out_t *o)
+static inline bool p2_holds(const point_t *p, const seek_out_t *o)
 {
     if (!o->has_block || o->contexts != p->depth || o->chr != p->chr) {
         return false;

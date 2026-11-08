@@ -58,7 +58,20 @@ bartap_err_t bt_dir_name(const bartap_directory_t *dir, uint32_t dir_offset, cha
 bartap_err_t bt_dir_find(const bartap_directory_t *dir, const char *name, uint16_t name_len,
                          bartap_entry_t *entry);
 
-/* A spine item's entry. BARTAP_ERR_ARG past the spine, BARTAP_ERR_CORRUPT if the item has no entry. */
+/* The first entry whose name has this hash and length, collisions accepted as at open (R22, R41).
+ * BARTAP_END if none. */
+bartap_err_t bt_dir_find_hash(const bartap_directory_t *dir, uint32_t name_hash, uint16_t name_len,
+                              bartap_entry_t *entry);
+
+/* Spine items in either layout (R41). A compact item by its index in the whole array. */
+#define BT_SPINE_COMPACT(spine, i) \
+    (&(spine)[(i) / BARTAP_SPINE_COMPACT_PER_ITEM].compact[(i) % BARTAP_SPINE_COMPACT_PER_ITEM])
+void bt_spine_path(const bartap_book_t *book, uint16_t spine_index, uint32_t *path_hash,
+                   uint16_t *path_len);
+uint8_t bt_spine_flags(const bartap_book_t *book, uint16_t spine_index);
+
+/* A spine item's entry, looked up for a compact item. BARTAP_ERR_ARG past the spine,
+ * BARTAP_ERR_CORRUPT if the item has no entry. */
 bartap_err_t bt_spine_entry(const bartap_book_t *book, uint16_t spine_index, bartap_entry_t *entry);
 
 /* Entry streams (R31). */
@@ -125,10 +138,12 @@ uint32_t bt_entity_decode(const char *name, uint32_t name_len, char *out);
 
 /* ---- package.c ---- */
 
-/* A spine slot's flags. PENDING: path_hash still holds the itemref's idref hash, between the OPF's
- * two passes. */
+/* A spine item's flags. PENDING: path_hash still holds the itemref's idref hash, between the OPF's
+ * two passes. FOUND: a compact item matched an entry at open, which a full item records in its
+ * dir_offset instead. */
 #define BT_SPINE_NONLINEAR 0x01u
 #define BT_SPINE_PENDING 0x02u
+#define BT_SPINE_FOUND 0x04u
 
 /* Resolves href against base, the path of the document it appears in, to an archive path. The
  * fragment and query are dropped, dot segments removed (never above the root), and each segment

@@ -901,6 +901,8 @@ static bartap_err_t text_init(bartap_text_t *text, const bartap_book_t *book, ui
         text->status = err;
         return err;
     }
+    // kept for bookmarks, so a compact item is looked up once, here (R41)
+    text->chapter_crc32 = entry->crc32;
     // the item's own path, for resolving image paths (R22). it matched a resolved href at open, so it
     // fits: anything else here is the card failing
     uint16_t len;
@@ -1242,7 +1244,7 @@ bartap_err_t bartap_text_seek(bartap_text_t *text, const bartap_bookmark_t *book
         // a bookmark for another item, open that one instead
         return BARTAP_ERR_ARG;
     }
-    if (bookmark->chapter_crc32 != text->book->spine[text->spine_index].crc32) {
+    if (bookmark->chapter_crc32 != text->chapter_crc32) {
         // check 2: the item changed, its start
         err = BARTAP_END;
     } else if (bookmark->version != BARTAP_BOOKMARK_VERSION) {
@@ -1323,9 +1325,16 @@ _Static_assert(BM_CRC + 4u == BARTAP_BOOKMARK_SIZE, "the bookmark CRC-32 ends th
 bartap_err_t bartap_bookmark_write(const bartap_book_t *book, uint16_t spine_index,
                                    uint32_t block_offset, uint32_t char_offset, uint8_t *out)
 {
-    if (book == NULL || out == NULL || spine_index >= book->spine_count) {
-        // no such item in this book
+    bartap_entry_t entry;
+
+    if (book == NULL || out == NULL) {
         return BARTAP_ERR_ARG;
+    }
+    // from the directory, so a changed chapter is caught without reading it (R12 check 2). past
+    // the spine is ARG, an item with no entry CORRUPT
+    bartap_err_t err = bt_spine_entry(book, spine_index, &entry);
+    if (err != BARTAP_OK) {
+        return err;
     }
     // byte by byte, little-endian, never a struct dump (R19)
     out[BM_VERSION] = (uint8_t)BARTAP_BOOKMARK_VERSION;
@@ -1333,8 +1342,7 @@ bartap_err_t bartap_bookmark_write(const bartap_book_t *book, uint16_t spine_ind
     bt_put_le16(out + BM_SPINE, spine_index);
     bt_put_le32(out + BM_BLOCK, block_offset);
     bt_put_le32(out + BM_CHAR, char_offset);
-    // from the directory, so a changed chapter is caught without reading it (R12 check 2)
-    bt_put_le32(out + BM_CHAPTER_CRC, book->spine[spine_index].crc32);
+    bt_put_le32(out + BM_CHAPTER_CRC, entry.crc32);
     bt_put_le32(out + BM_CRC, bt_crc32(0, out, BM_CRC));
     return BARTAP_OK;
 }
@@ -1453,7 +1461,10 @@ static void toc_entry(bartap_toc_t *toc, const char *href, uint32_t href_len, ui
         uint32_t hash = bt_name_hash(BT_NAME_HASH_INIT, path, path_len);
         for (uint16_t i = 0; i < book->spine_count; i++) {
             // first in spine order, the way the reader meets it
-            if (book->spine[i].path_hash == hash && book->spine[i].path_len == path_len) {
+            uint32_t item_hash;
+            uint16_t item_len;
+            bt_spine_path(book, i, &item_hash, &item_len);
+            if (item_hash == hash && item_len == path_len) {
                 rec->toc.spine_index = i;
                 return;
             }
@@ -1908,7 +1919,7 @@ bartap_err_t bartap_toc_resolve(bartap_text_t *text, const char *id, uint32_t id
     out->version = (uint8_t)BARTAP_BOOKMARK_VERSION;
     out->book_hash = text->book->book_hash;
     out->spine_index = text->spine_index;
-    out->chapter_crc32 = text->book->spine[text->spine_index].crc32;
+    out->chapter_crc32 = text->chapter_crc32;
     out->block_offset = 0;
     out->char_offset = 0;
 

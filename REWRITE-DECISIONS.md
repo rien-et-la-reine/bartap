@@ -238,6 +238,8 @@ Character offsets in bookmarks count the bytes of text records only, never other
   hashed like spine paths, their directory-record offsets recorded per R22).
 - The first two walks stop at their match. Guessing the OPF during the first walk was rejected:
   more code for little gain.
+- In hashed mode (R24) the first two are index lookups instead, and building the index is a walk
+  of its own: two full walks in all.
 
 ## R24 — Optional directory buffer, kept with the book
 
@@ -247,14 +249,20 @@ Character offsets in bookmarks count the bytes of text records only, never other
 - The central directory's size is known from the end record, so the mode is chosen up front:
   1. **Raw**: the whole central directory fits. It is read in one go, and every walk and lookup
      (at open and later) runs over it in RAM.
-  2. **None**: it does not fit. The buffer is ignored and every walk reads the card.
-- A partial directory is never used.
-- Testing: every lookup has two paths (raw, none) that must give identical results. Open every
-  fixture in both modes and compare the results, and run the fuzzers in both.
-- Deferred: a **hashed** mode for directories too large for the buffer (an index of name hash,
-  length and directory-record offset, built in the first walk, every hit confirmed by reading the
-  directory record per R22). It changes no format or output, so it can be added later if real books
-  need it. Left out of the rewrite to keep the number of lookup paths down.
+  2. **Hashed**: it does not fit, but an index of it does: 10 bytes per entry (name hash, name
+     length and directory-record offset, little-endian per R19), in directory order. One walk of
+     the card at open builds it. A lookup by name scans the index and confirms a candidate by
+     reading its name from the directory record (R22); the first match still wins (R44). A lookup
+     by hash alone, as compact spine items make (R41), reads only the matching record. Walks still
+     read the card.
+  3. **None**: not even the index fits. The buffer is ignored and every walk reads the card.
+- A partial directory or index is never used. A bad record while building the index leaves none
+  mode, so the walks that reach that record fail as they would have without a buffer.
+- Hashed mode matters for lookups after open: in none mode each image record (R9) and resource
+  opened by name walks the directory on the card, about half of it on average; hashed reads one
+  record. Code cost about 0.5 KB.
+- Testing: every lookup has three paths that must give identical results. Every fixture is opened
+  in each mode and the results compared, and the fuzzers run in each.
 
 ## R25 — Metadata copied at open
 
@@ -458,17 +466,26 @@ Character offsets in bookmarks count the bytes of text records only, never other
 
 ## R41 — Caller's spine array, with truncation reported (old D14 revised)
 
-- The caller supplies an array of spine items and its capacity, which must outlive the book. Each
-  item (about 32 bytes) holds its path hash and length, local header and directory-record offsets,
-  sizes, CRC-32, method and flags, so a chapter opens with no lookup.
-- If the book has more spine items than the array holds, the first `capacity` are kept, a truncation
-  warning is set, and later chapters are unreachable.
+- The caller supplies an array of spine slots and its capacity, which must outlive the book. A full
+  item (28 bytes on the Cortex-M33) holds its path hash and length, local header and
+  directory-record offsets, sizes, CRC-32, method and flags, so a chapter opens with no lookup.
+- If the book has more spine items than the array holds as compact items (below), the first ones
+  are kept, a truncation warning is set, and later chapters are unreachable.
 - The required item count is always reported (the first OPF pass counts itemrefs before the directory
   walk), so a caller with spare memory can reopen with a larger array.
-- Deferred: a **compact** mode for spines too long for full items (about 8-byte items holding path
-  hash, length and linear flag, with each chapter's entry looked up when it is opened; slots become
-  a union of one full item or several compact ones, declared by real type per R28). It changes no
-  format or output, so it can be added later if real books need it.
+- **Compact** mode, for spines longer than the array: each slot holds three 8-byte compact items
+  (path hash, length, flags) instead of one full item of 28 bytes. The slot is a union of the full
+  item's fields and the compact array, declared by its real type (R28), so the caller's code doesn't
+  change.
+  - The OPF's first pass always writes compact items, since how many there are is only known at the
+    end of it. If they fit full slots, they are spread into them, last first, so none is overwritten
+    before it is moved; otherwise they stay compact, up to three times the capacity.
+  - The open walk notes which compact items matched an entry. Opening one looks its entry up by
+    path hash and length, the rule the walk matched it by (R22), so it finds the entry a full item
+    would have held. That lookup is one record read in hashed mode (R24), a walk otherwise.
+  - A text object keeps its chapter's CRC-32 from open, so seeks and TOC resolution need no lookup.
+    `bartap_bookmark_write` looks the entry up, and refuses an item with no entry.
+  - Truncation, and its warning, starts past three items per slot.
 - A rolling spine (refilling a window by re-parsing the OPF) was rejected: OPF re-parses, TOC
   targets outside the window, and refill logic, for books no compact spine fails to hold.
 
@@ -762,7 +779,6 @@ The whole API is in place (phases 2 to 9 below); `include/bartap.h` is its refer
 
 ### Out of scope
 
-- Deferred by these decisions: hashed directory mode (R24), compact spine (R41), fast inflate lookup
-  table (R39), grid containers (R46).
+- Deferred by these decisions: fast inflate lookup table (R39), grid containers (R46).
 - Layout and rendering, the SD driver and FatFs, and the Tavernkeep side of R51 (firmware, timings,
   stack painting).
