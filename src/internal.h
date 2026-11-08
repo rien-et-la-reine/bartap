@@ -96,7 +96,9 @@ bartap_err_t bt_bytes_read(bartap_bytes_t *bytes, uint8_t *buf, uint32_t cap, ui
 bartap_err_t bt_bytes_seek(bartap_bytes_t *bytes, uint32_t offset);
 
 /* XML tokenizer, with its own interface so it can be tested and fuzzed alone (R15, R33). */
-void bt_xml_init(bartap_xml_t *xml, bartap_bytes_t *bytes, bartap_warnings_t *warnings);
+/* warnings may be NULL; spine_index is reported with them, BARTAP_NO_SPINE outside a chapter. */
+void bt_xml_init(bartap_xml_t *xml, bartap_bytes_t *bytes, bartap_warnings_t *warnings,
+                 uint16_t spine_index);
 
 /* The next token, or BARTAP_END when the source is finished. */
 bartap_err_t bt_xml_next(bartap_xml_t *xml, const bartap_xml_token_t **token);
@@ -112,10 +114,12 @@ bool bt_xml_attr(const bartap_xml_t *xml, const char *name, uint32_t name_len, c
 bartap_err_t bt_xml_seek(bartap_xml_t *xml, uint32_t offset);
 
 /* Decodes one character at p, falling back to Windows-1252 on invalid UTF-8 (R30). Writes UTF-8 to
- * out (at least BARTAP_TEXT_MIN bytes). Returns the input bytes used, or 0 if more input is needed. */
+ * out (at least BARTAP_TEXT_MIN bytes). Returns the input bytes used, or 0 if more input is needed:
+ * only when len is 0, or the sequence is valid so far but cut short. */
 uint32_t bt_utf8_decode(const uint8_t *p, uint32_t len, char *out, uint32_t *out_len);
 
-/* Decodes the entity after an `&`, including character references (R30). Returns bytes written. */
+/* Decodes the entity name after an `&`, without its `;`, including character references (R30).
+ * Writes UTF-8 to out (at least BARTAP_TEXT_MIN bytes). Returns bytes written, 0 if unknown. */
 uint32_t bt_entity_decode(const char *name, uint32_t name_len, char *out);
 
 /* ---- package.c ---- */

@@ -283,6 +283,7 @@ typedef struct {
 
 #define BARTAP_XML_NAME_MAX 32u  /* longer names cannot match a known element */
 #define BARTAP_XML_ATTRS_MAX 16u /* attributes kept per tag, in BARTAP_ATTR_MAX bytes */
+#define BARTAP_XML_ENTITY_MAX 32u /* longer entity names pass through literally (R30) */
 
 typedef struct {
     uint16_t name_offset;
@@ -306,16 +307,29 @@ typedef struct {
     char name[BARTAP_XML_NAME_MAX]; /* local name, ASCII-folded (R46) */
 } bartap_xml_token_t;
 
-/* Tokens must not depend on the read-ahead's size (R33). */
+/* Tokens must not depend on the read-ahead's size (R33): bytes consumed but not yet delivered are held
+ * here, never in the read-ahead. */
 typedef struct {
     bartap_bytes_t *bytes;
-    bartap_warnings_t *warnings;
+    bartap_warnings_t *warnings; /* NULL when the tokenizer is tested alone */
     uint32_t offset;        /* consumed, excluding read-ahead (R48) */
     uint32_t readahead_pos;
     uint32_t readahead_len;
     uint32_t attr_used;
     uint32_t attr_count;
+    bartap_err_t status;    /* sticky once failed */
+    uint16_t spine_index;   /* reported with warnings */
     uint8_t state;
+    uint8_t text_done;
+    uint8_t cdata;          /* inside a CDATA section */
+    uint8_t brackets;       /* CDATA ']' bytes held, which may be its end */
+    uint8_t staged_len;
+    uint8_t held_len;
+    uint8_t replay_len;
+    uint8_t replay_pos;
+    uint8_t staged[4];      /* UTF-8 bytes awaiting decode */
+    char held[BARTAP_TEXT_MIN]; /* one decoded character */
+    char replay[BARTAP_XML_ENTITY_MAX + 2u]; /* literal bytes owed: '&', a name, ';' */
     bartap_xml_token_t token;
     bartap_xml_attr_t attrs[BARTAP_XML_ATTRS_MAX];
     char attr_storage[BARTAP_ATTR_MAX];

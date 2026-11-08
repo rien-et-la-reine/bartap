@@ -8,6 +8,7 @@ endif()
 
 option(BARTAP_BUILD_TESTS "Build Bartap's host tests" ${PROJECT_IS_TOP_LEVEL})
 option(BARTAP_SANITIZE "Build with ASan and UBSan" OFF)
+option(BARTAP_FUZZ "Build libFuzzer targets (clang)" OFF)
 
 # Output-neutral limits (R33). PUBLIC below, so the library and its callers always agree.
 set(BARTAP_INPUT_BUF 512 CACHE STRING "Compressed bytes read per inflate refill")
