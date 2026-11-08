@@ -1361,6 +1361,10 @@ static bartap_err_t spine_entry(const bartap_book_t *book, uint16_t spine_index,
     }
     // copy the facts across, the path hash and name length aren't part of an entry
     const bartap_spine_item_t *item = &book->spine[spine_index];
+    if (item->dir_offset == BARTAP_NO_DIR_OFFSET) {
+        // no archive entry matched it at open, already warned about. the book is damaged
+        return BARTAP_ERR_CORRUPT;
+    }
     entry->dir_offset = item->dir_offset;
     entry->local_offset = item->local_offset;
     entry->compressed_size = item->compressed_size;

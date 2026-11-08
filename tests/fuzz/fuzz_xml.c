@@ -13,6 +13,7 @@
 
 #include "stream_fixture.h"
 #include "xml_dump.h"
+#include "xml_gen.h"
 
 #define FUZZ_CHECK(cond)                                                              \
     do {                                                                              \
@@ -169,6 +170,13 @@ static void check_seek(const uint8_t *data, uint32_t size, const xml_dump_t *str
 }
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
+size_t fuzz_generate(uint32_t seed, uint8_t *out, size_t cap);
+
+/* For the standalone replay, fuzz_main.c. */
+size_t fuzz_generate(uint32_t seed, uint8_t *out, size_t cap)
+{
+    return xml_gen(seed, out, cap > UINT32_MAX ? UINT32_MAX : (uint32_t)cap);
+}
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 {

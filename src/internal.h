@@ -122,19 +122,27 @@ uint32_t bt_entity_decode(const char *name, uint32_t name_len, char *out);
 
 /* ---- package.c ---- */
 
-/* Stubs from here on. Those returning bartap_err_t return BARTAP_ERR_UNSUPPORTED until implemented. */
+/* A spine slot's flags. PENDING: path_hash still holds the itemref's idref hash, between the OPF's
+ * two passes. */
+#define BT_SPINE_NONLINEAR 0x01u
+#define BT_SPINE_PENDING 0x02u
 
-/* Joins href to base, percent-decoding once and refusing %2F (R43). */
+/* Resolves href against base, the path of the document it appears in, to an archive path. The
+ * fragment and query are dropped, dot segments removed (never above the root), and each segment
+ * percent-decoded once (R43). BARTAP_ERR_CORRUPT for %2F, BARTAP_ERR_UNSUPPORTED for a URI with a
+ * scheme (remote, data:), BARTAP_ERR_BUFFER_TOO_SMALL past cap. Not NUL-terminated. */
 bartap_err_t bt_href_resolve(const char *base, uint32_t base_len, const char *href, uint32_t href_len,
                              char *out, uint32_t cap, uint16_t *out_len);
 
-/* The steps of bartap_open (R23, R41). */
+/* The steps of bartap_open, three directory walks in all (R23, R41). */
 bartap_err_t bt_read_container(bartap_book_t *book, bartap_open_work_t *work, uint8_t *window);
 bartap_err_t bt_opf_first_pass(bartap_book_t *book, bartap_open_work_t *work, uint8_t *window);
-bartap_err_t bt_opf_second_pass(bartap_book_t *book, bartap_open_work_t *work, uint8_t *window);
+bartap_err_t bt_opf_second_pass(bartap_book_t *book, bartap_open_work_t *work);
 bartap_err_t bt_match_spine(bartap_book_t *book, bartap_open_work_t *work);
 
 /* ---- text.c ---- */
+
+/* Stubs from here on. Those returning bartap_err_t return BARTAP_ERR_UNSUPPORTED until implemented. */
 
 /* Element classes (R46). Returns a tag index below BARTAP_TAG_COUNT, or BARTAP_TAG_COUNT if unknown. */
 uint8_t bt_tag_lookup(const char *name, uint32_t name_len);

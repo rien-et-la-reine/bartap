@@ -23,6 +23,7 @@ bartap_add_test(test_stream unit/test_stream.c)
 bartap_add_test(test_directory unit/test_directory.c)
 bartap_add_test(test_bytes unit/test_bytes.c)
 bartap_add_test(test_xml unit/test_xml.c)
+bartap_add_test(test_package unit/test_package.c)
 bartap_add_test(test_inflate_zlib diff/test_inflate_zlib.c ZLIB::ZLIB)
 
 # Real zip files, against Python's zipfile (R36).
@@ -54,7 +55,8 @@ bartap_add_input1_test(test_inflate_zlib_input1 diff/test_inflate_zlib.c ZLIB::Z
 # Builds sources straight from src/ with limits other than the library's. defines is a list such as
 # "BARTAP_XML_READAHEAD=1"; the remaining arguments are source files.
 function(bartap_add_sized_executable name defines)
-    add_executable(${name} ${ARGN} ${PROJECT_SOURCE_DIR}/src/zip.c ${PROJECT_SOURCE_DIR}/src/xml.c)
+    add_executable(${name} ${ARGN} ${PROJECT_SOURCE_DIR}/src/zip.c ${PROJECT_SOURCE_DIR}/src/xml.c
+        ${PROJECT_SOURCE_DIR}/src/package.c)
     target_include_directories(${name} PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR} ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src)
     target_compile_definitions(${name} PRIVATE ${defines})
@@ -65,6 +67,11 @@ endfunction()
 # The tokenizer's read-ahead must not change its tokens (R33). One byte makes every byte a refill.
 bartap_add_sized_executable(test_xml_readahead1 "BARTAP_XML_READAHEAD=1" unit/test_xml.c)
 add_test(NAME test_xml_readahead1 COMMAND test_xml_readahead1)
+
+# Opening a book through 1-byte buffers everywhere: a refill at every byte, same book (R33).
+bartap_add_sized_executable(test_package_buffers1 "BARTAP_XML_READAHEAD=1;BARTAP_INPUT_BUF=1"
+    unit/test_package.c)
+add_test(NAME test_package_buffers1 COMMAND test_package_buffers1)
 
 # The same, across builds: every build hashes the same documents and all must agree.
 add_executable(xml_hash prop/xml_hash.c)
@@ -86,10 +93,16 @@ bartap_add_sized_executable(fuzz_xml_replay_readahead1 "BARTAP_XML_READAHEAD=1"
     fuzz/fuzz_xml.c fuzz/fuzz_main.c)
 add_test(NAME fuzz_xml_replay COMMAND fuzz_xml_replay)
 add_test(NAME fuzz_xml_replay_readahead1 COMMAND fuzz_xml_replay_readahead1)
+bartap_add_sized_executable(fuzz_open_replay "BARTAP_XML_READAHEAD=256" fuzz/fuzz_open.c fuzz/fuzz_main.c)
+bartap_add_sized_executable(fuzz_open_replay_buffers1 "BARTAP_XML_READAHEAD=1;BARTAP_INPUT_BUF=1"
+    fuzz/fuzz_open.c fuzz/fuzz_main.c)
+add_test(NAME fuzz_open_replay COMMAND fuzz_open_replay)
+add_test(NAME fuzz_open_replay_buffers1 COMMAND fuzz_open_replay_buffers1)
 
 # libFuzzer builds, with clang: cmake -DBARTAP_FUZZ=ON -DCMAKE_C_COMPILER=clang, then run
-# build/tests/fuzz_xml corpus/ (and fuzz_xml_readahead1). Then replay the corpus through
-# xml_hash and xml_hash_readahead1 with compare_outputs.py to check R33 on what the fuzzer found.
+# build/tests/fuzz_xml corpus/ (and fuzz_xml_readahead1, fuzz_open). Then replay the tokenizer's
+# corpus through xml_hash and xml_hash_readahead1 with compare_outputs.py to check R33 on what the
+# fuzzer found.
 if(BARTAP_FUZZ)
     if(NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
         message(FATAL_ERROR "BARTAP_FUZZ needs clang for libFuzzer")
@@ -103,6 +116,9 @@ if(BARTAP_FUZZ)
         target_compile_options(${name} PRIVATE -fsanitize=fuzzer,address,undefined -g)
         target_link_options(${name} PRIVATE -fsanitize=fuzzer,address,undefined)
     endforeach()
+    bartap_add_sized_executable(fuzz_open "BARTAP_XML_READAHEAD=256" fuzz/fuzz_open.c)
+    target_compile_options(fuzz_open PRIVATE -fsanitize=fuzzer,address,undefined -g)
+    target_link_options(fuzz_open PRIVATE -fsanitize=fuzzer,address,undefined)
 endif()
 
 # Sanitizer runtimes add symbols of their own, so the check only means something on a plain build.

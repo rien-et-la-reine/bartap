@@ -366,10 +366,17 @@ typedef struct {
     bartap_stream_t stream;
     bartap_bytes_t bytes;
     bartap_xml_t xml;
-    uint32_t unique_id_hash;
+    uint32_t unique_id_hash; /* ids from the OPF's first pass, matched in its second */
     uint32_t toc_id_hash;
     uint32_t cover_id_hash;
-    uint16_t opf_dir_len;
+    uint32_t nav_path_hash;  /* paths from the second pass, matched in the directory walk (R23) */
+    uint32_t ncx_path_hash;
+    uint32_t cover_path_hash;
+    uint16_t nav_path_len;   /* 0 while not found */
+    uint16_t ncx_path_len;
+    uint16_t cover_path_len;
+    uint16_t opf_path_len;
+    uint8_t found;           /* which of the ids above the OPF has */
     char opf_path[BARTAP_PATH_MAX + 1u];
     char resolved[BARTAP_PATH_MAX + 1u];
 } bartap_open_work_t;

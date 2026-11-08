@@ -1,18 +1,19 @@
 /* Runs a fuzz target without libFuzzer: over the files named, such as a corpus or a crash to
- * reproduce, or else over generated documents, so its checks run in every ctest. */
+ * reproduce, or else over inputs the target generates itself, so its checks run in every ctest. */
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-
-#include "xml_gen.h"
 
 #define GENERATED 3000u
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
 
+/* Each target's generator: input number seed into out, returning its length, at most cap. */
+size_t fuzz_generate(uint32_t seed, uint8_t *out, size_t cap);
+
 int main(int argc, char **argv)
 {
-    static uint8_t buf[1u << 20];
+    static uint8_t buf[1u << 22];
 
     if (argc > 1) {
         for (int i = 1; i < argc; i++) {
@@ -29,7 +30,7 @@ int main(int argc, char **argv)
         return 0;
     }
     for (uint32_t seed = 1; seed <= GENERATED; seed++) {
-        uint32_t n = xml_gen(seed, buf, sizeof buf);
+        size_t n = fuzz_generate(seed, buf, sizeof buf);
         LLVMFuzzerTestOneInput(buf, n);
     }
     printf("%u generated inputs passed\n", GENERATED);
