@@ -170,8 +170,8 @@ static bool equals_folded(const char *value, uint32_t value_len, const char *wan
 
 #define EQUALS(value, len, want) equals_folded(value, len, want, sizeof want - 1u)
 
-// Whether a space-separated list, such as properties="nav scripted", holds a token.
-static bool has_token(const char *list, uint32_t list_len, const char *token, uint32_t token_len)
+// Whether a space-separated list, such as properties="nav scripted", holds a token. Case matters.
+bool bt_has_token(const char *list, uint32_t list_len, const char *token, uint32_t token_len)
 {
     uint32_t i = 0;
     while (i < list_len) {
@@ -189,7 +189,7 @@ static bool has_token(const char *list, uint32_t list_len, const char *token, ui
     return false;
 }
 
-#define HAS_TOKEN(list, len, token) has_token(list, len, token, sizeof token - 1u)
+#define HAS_TOKEN(list, len, token) bt_has_token(list, len, token, sizeof token - 1u)
 
 static void book_warn(bartap_book_t *book, bartap_warning_t code, uint16_t spine_index,
                       uint32_t offset)

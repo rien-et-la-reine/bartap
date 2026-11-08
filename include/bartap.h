@@ -397,16 +397,15 @@ typedef struct {
 
 /* -- Layer 3: text, TOC, bookmarks, seek (text.c) -- */
 
-/* Tags tracked for ignored-past-depth close tags (R47): every element named in R46. */
-#define BARTAP_TAG_COUNT 54u
+/* Tags tracked for ignored-past-depth close tags (R47): every element named in R46, br included. */
+#define BARTAP_TAG_COUNT 55u
 
 typedef struct {
     uint8_t tag;
     uint8_t class_kind; /* container, block, inline or boundary */
-    uint8_t level;
     uint8_t flags;      /* such as a list's reversed */
     uint32_t style;     /* style to restore when this frame pops */
-    int32_t ordinal;    /* list frames: the next item's number (R45) */
+    int32_t ordinal;    /* lists: the next item's number; items: their own (R45) */
 } bartap_frame_t;
 
 /* All a checkpoint needs to resume parsing (R48). */
@@ -414,14 +413,19 @@ typedef struct {
     bartap_frame_t frames[BARTAP_DEPTH_MAX];
     uint8_t ignored[BARTAP_TAG_COUNT]; /* per-tag counts past the depth limit (R47) */
     uint8_t depth;
-    uint8_t block_live;
+    uint8_t block_live;    /* an output block is open, explicit or not (R46) */
+    uint8_t block_kind;
+    uint8_t block_level;
     uint8_t block_has_content;
+    uint8_t space_allowed; /* the block's last content was text (R4) */
     uint8_t space_pending; /* (R4) */
     uint8_t skip_tag;
     uint16_t skip_depth;
-    uint32_t style;
+    uint32_t style;        /* from the frames */
+    uint32_t style_out;    /* in the last style record (R7) */
+    uint32_t space_style;  /* the pending space's, from its first whitespace (R4) */
     uint32_t block_offset;
-    uint32_t char_offset;
+    uint32_t char_offset;  /* text bytes into the block (R10) */
 } bartap_parse_state_t;
 
 typedef struct {
@@ -453,9 +457,16 @@ typedef struct {
     uint32_t target_char;
     uint16_t spine_index;
     uint16_t base_dir_len;
+    uint32_t image_dir_offset; /* a queued image record's (R9) */
     uint8_t emit_state;   /* for moments that produce several records (R20) */
+    uint8_t emit_next;    /* what follows a queued block start's style */
     uint8_t emit_index;
+    uint8_t unwind_to;    /* depth an end tag unwinds to, popped one frame per call */
     uint8_t replaying;
+    uint8_t stash_len;    /* decoded text read but not yet delivered */
+    uint8_t stash_pos;
+    uint8_t cr_seen;      /* in pre, a CR's LF is part of the same break */
+    char stash[BARTAP_TEXT_MIN];
     bartap_stream_t stream;
     bartap_bytes_t bytes;
     bartap_xml_t xml;

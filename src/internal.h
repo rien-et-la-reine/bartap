@@ -134,6 +134,9 @@ uint32_t bt_entity_decode(const char *name, uint32_t name_len, char *out);
 bartap_err_t bt_href_resolve(const char *base, uint32_t base_len, const char *href, uint32_t href_len,
                              char *out, uint32_t cap, uint16_t *out_len);
 
+/* Whether a space-separated attribute value, such as properties="nav scripted", holds a token. */
+bool bt_has_token(const char *list, uint32_t list_len, const char *token, uint32_t token_len);
+
 /* The steps of bartap_open, three directory walks in all (R23, R41). */
 bartap_err_t bt_read_container(bartap_book_t *book, bartap_open_work_t *work, uint8_t *window);
 bartap_err_t bt_opf_first_pass(bartap_book_t *book, bartap_open_work_t *work, uint8_t *window);
@@ -147,15 +150,20 @@ bartap_err_t bt_match_spine(bartap_book_t *book, bartap_open_work_t *work);
 /* Element classes (R46). Returns a tag index below BARTAP_TAG_COUNT, or BARTAP_TAG_COUNT if unknown. */
 uint8_t bt_tag_lookup(const char *name, uint32_t name_len);
 
-/* Fills rec from any multi-record moment in progress (R20). false if none is. */
+/* Fills rec from any multi-record moment in progress (R20). false if none is. Drain it before handing
+ * the next token on: queued starts come out first, then frames an end tag unwound. */
 bool bt_text_emit_pending(bartap_text_t *text, bartap_record_t *rec);
 
-/* Handle one token, updating frames and queuing records (R4, R45, R46, R47). */
+/* Handle one tag, updating frames and queuing records (R45, R46, R47). */
 bartap_err_t bt_text_start_tag(bartap_text_t *text, const bartap_xml_token_t *token);
 bartap_err_t bt_text_end_tag(bartap_text_t *text, const bartap_xml_token_t *token);
 
-/* Fills rec with text up to the buffer's size (R6, R50). */
+/* The current text token's next record (R4, R6, R50): text up to the buffer's size, or whatever has to
+ * come before it (a block start, a style, a lone space). BARTAP_END when the token has no more. */
 bartap_err_t bt_text_fill(bartap_text_t *text, bartap_record_t *rec);
+
+/* The source ended: queues the closing of everything still open (R47 rule 4). */
+void bt_text_finish(bartap_text_t *text);
 
 /* The image record's directory offset (R9). BARTAP_END if it cannot be resolved. */
 bartap_err_t bt_image_lookup(bartap_text_t *text, const char *src, uint32_t src_len,
