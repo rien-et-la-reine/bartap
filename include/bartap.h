@@ -94,6 +94,7 @@ typedef struct {
     uint32_t bits;
     bartap_warn_fn fn; /* NULL is always valid */
     void *user;
+    uint32_t quiet_below; /* no callback for offsets below this, during a replay (R49) */
 } bartap_warnings_t;
 
 /* ---- I/O (R37) ---------------------------------------------------------------------------- */
@@ -190,7 +191,7 @@ typedef struct {
 /* ---- State structs (R28) ------------------------------------------------------------------ */
 
 /* Declared by the caller by real type, so sizeof is the size. Fields are Bartap's: callers read
- * nothing from them. Those for code still stubbed (package.c, text.c) may change. */
+ * nothing from them. */
 
 /* -- Layer 1: archive and entries (zip.c) -- */
 
@@ -453,8 +454,9 @@ typedef struct {
     uint32_t text_cap;
     bartap_warnings_t warnings;
     uint32_t high_water;  /* callback stays silent below this during replay (R49) */
-    uint32_t target_block;
-    uint32_t target_char;
+    uint32_t target_char; /* where a replay lands in its block (R49) */
+    const char *find_id;  /* an element id bartap_toc_resolve looks for (R13), or NULL */
+    uint32_t find_id_len;
     uint16_t spine_index;
     uint16_t base_dir_len;
     uint32_t image_dir_offset; /* a queued image record's (R9) */
@@ -462,10 +464,15 @@ typedef struct {
     uint8_t emit_next;    /* what follows a queued block start's style */
     uint8_t emit_index;
     uint8_t unwind_to;    /* depth an end tag unwinds to, popped one frame per call */
-    uint8_t replaying;
+    uint8_t replaying;    /* records are discarded: no text copied, no images looked up (R49) */
+    uint8_t landing;      /* replaying inside the target block, text stops at target_char */
+    uint8_t id_found;     /* the start tag just handled carried find_id */
     uint8_t stash_len;    /* decoded text read but not yet delivered */
     uint8_t stash_pos;
     uint8_t cr_seen;      /* in pre, a CR's LF is part of the same break */
+    uint8_t in_text;      /* a text token is being delivered */
+    uint8_t finished;     /* the source ended, only closing records are left */
+    bartap_err_t status;  /* sticky once failed */
     char stash[BARTAP_TEXT_MIN];
     bartap_stream_t stream;
     bartap_bytes_t bytes;
@@ -480,13 +487,26 @@ typedef struct {
     char *text_buf;
     uint32_t text_cap;
     bartap_warnings_t warnings;
-    uint32_t label_offset; /* where an NCX label re-read starts (R26) */
+    uint32_t label_offset; /* where an NCX label re-read starts (R26), or none */
     uint32_t style;
-    uint16_t depth;
+    uint32_t style_out;    /* in the last style record */
+    bartap_err_t status;   /* sticky once failed */
+    uint16_t depth;        /* open lists (nav) or navPoints (NCX) */
+    uint16_t nav_nest;     /* nav elements open inside the toc nav */
+    uint16_t label_nest;   /* label elements of the label's own name open */
     uint16_t base_dir_len;
     uint8_t is_ncx;
+    uint8_t mode;          /* looking for the list, in it, in a label, or done */
+    uint8_t label_tag;
+    uint8_t has_entry;     /* the current li or navPoint has returned its entry */
     uint8_t emit_state;
+    uint8_t in_text;
     uint8_t space_pending;
+    uint8_t space_allowed;
+    uint8_t stash_len;
+    uint8_t stash_pos;
+    char stash[BARTAP_TEXT_MIN];
+    uint8_t style_count[8]; /* open inline elements per style bit, labels can nest them */
     bartap_stream_t stream;
     bartap_bytes_t bytes;
     bartap_xml_t xml;
@@ -504,8 +524,6 @@ typedef struct {
 } bartap_bookmark_t;
 
 /* ---- API ---------------------------------------------------------------------------------- */
-
-/* All stubs return BARTAP_ERR_UNSUPPORTED until implemented. */
 
 /* -- Book (R23, R24, R25, R27, R41) -- */
 

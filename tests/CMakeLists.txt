@@ -24,6 +24,9 @@ bartap_add_test(test_directory unit/test_directory.c)
 bartap_add_test(test_bytes unit/test_bytes.c)
 bartap_add_test(test_xml unit/test_xml.c)
 bartap_add_test(test_package unit/test_package.c)
+bartap_add_test(test_text unit/test_text.c)
+bartap_add_test(test_seek unit/test_seek.c)
+bartap_add_test(test_toc unit/test_toc.c)
 bartap_add_test(test_inflate_zlib diff/test_inflate_zlib.c ZLIB::ZLIB)
 
 # Real zip files, against Python's zipfile (R36).
@@ -56,7 +59,7 @@ bartap_add_input1_test(test_inflate_zlib_input1 diff/test_inflate_zlib.c ZLIB::Z
 # "BARTAP_XML_READAHEAD=1"; the remaining arguments are source files.
 function(bartap_add_sized_executable name defines)
     add_executable(${name} ${ARGN} ${PROJECT_SOURCE_DIR}/src/zip.c ${PROJECT_SOURCE_DIR}/src/xml.c
-        ${PROJECT_SOURCE_DIR}/src/package.c)
+        ${PROJECT_SOURCE_DIR}/src/package.c ${PROJECT_SOURCE_DIR}/src/text.c)
     target_include_directories(${name} PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR} ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src)
     target_compile_definitions(${name} PRIVATE ${defines})
@@ -73,6 +76,15 @@ bartap_add_sized_executable(test_package_buffers1 "BARTAP_XML_READAHEAD=1;BARTAP
     unit/test_package.c)
 add_test(NAME test_package_buffers1 COMMAND test_package_buffers1)
 
+# The text layer, TOC and seeks through the same 1-byte buffers: records must not change (R33). The
+# seek properties sample every fifth landing point here, the full run is test_seek's.
+bartap_add_sized_executable(test_text_buffers1 "BARTAP_XML_READAHEAD=1;BARTAP_INPUT_BUF=1" unit/test_text.c)
+add_test(NAME test_text_buffers1 COMMAND test_text_buffers1)
+bartap_add_sized_executable(test_toc_buffers1 "BARTAP_XML_READAHEAD=1;BARTAP_INPUT_BUF=1" unit/test_toc.c)
+add_test(NAME test_toc_buffers1 COMMAND test_toc_buffers1)
+bartap_add_sized_executable(test_seek_buffers1 "BARTAP_XML_READAHEAD=1;BARTAP_INPUT_BUF=1" unit/test_seek.c)
+add_test(NAME test_seek_buffers1 COMMAND test_seek_buffers1 5)
+
 # The same, across builds: every build hashes the same documents and all must agree.
 add_executable(xml_hash prop/xml_hash.c)
 target_include_directories(xml_hash PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${PROJECT_SOURCE_DIR}/src)
@@ -86,6 +98,58 @@ add_test(NAME xml_readahead_agree
             $<TARGET_FILE:xml_hash> $<TARGET_FILE:xml_hash_readahead1>
             $<TARGET_FILE:xml_hash_readahead7>)
 
+# Generated EPUB fixtures (phase 10). gen.py is the source; the books are built into the build tree,
+# and configuring again picks up a new fixture's name.
+set(BARTAP_FIXTURE_GEN ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/gen.py)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${BARTAP_FIXTURE_GEN})
+execute_process(COMMAND ${Python3_EXECUTABLE} ${BARTAP_FIXTURE_GEN} --list
+    OUTPUT_VARIABLE fixture_names OUTPUT_STRIP_TRAILING_WHITESPACE COMMAND_ERROR_IS_FATAL ANY)
+string(REPLACE "\n" ";" fixture_names "${fixture_names}")
+set(BARTAP_FIXTURE_DIR ${CMAKE_CURRENT_BINARY_DIR}/fixtures)
+set(fixture_files "")
+foreach(fixture ${fixture_names})
+    list(APPEND fixture_files ${BARTAP_FIXTURE_DIR}/${fixture}.epub)
+endforeach()
+add_custom_command(OUTPUT ${fixture_files}
+    COMMAND Python3::Interpreter ${BARTAP_FIXTURE_GEN} ${BARTAP_FIXTURE_DIR}
+    DEPENDS ${BARTAP_FIXTURE_GEN}
+    COMMENT "Generating EPUB fixtures")
+add_custom_target(bartap_fixtures ALL DEPENDS ${fixture_files})
+
+# The dump of every fixture against the expected lines, and the pairs that must agree (R26, R51). The
+# dump checks its own agreements too: directory modes, stream and memory, text buffer sizes. After an
+# intended change in output, refresh the file with check.py's --update, then bump the bookmark
+# version if text or block boundaries changed (R12).
+add_executable(fixture_dump fixtures/dump.c canon.c)
+target_include_directories(fixture_dump PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(fixture_dump PRIVATE bartap)
+target_compile_options(fixture_dump PRIVATE ${BARTAP_WARNING_FLAGS})
+set_target_properties(fixture_dump PROPERTIES C_EXTENSIONS OFF)
+add_dependencies(fixture_dump bartap_fixtures)
+add_test(NAME fixtures_expected
+    COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/check.py
+            $<TARGET_FILE:fixture_dump> ${BARTAP_FIXTURE_DIR}
+            ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/expected.txt)
+
+# The same dump through 1-byte buffers and an odd read-ahead: every line must match (R33).
+bartap_add_sized_executable(fixture_dump_buffers1 "BARTAP_XML_READAHEAD=1;BARTAP_INPUT_BUF=1"
+    fixtures/dump.c canon.c)
+bartap_add_sized_executable(fixture_dump_readahead7 "BARTAP_XML_READAHEAD=7;BARTAP_INPUT_BUF=7"
+    fixtures/dump.c canon.c)
+add_test(NAME fixtures_buffers_agree
+    COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/prop/compare_outputs.py
+            $<TARGET_FILE:fixture_dump> $<TARGET_FILE:fixture_dump_buffers1>
+            $<TARGET_FILE:fixture_dump_readahead7> -- ${fixture_files})
+
+# P1 and P2 at landing points through every fixture, and every TOC entry followed (R13, R48).
+add_executable(test_fixture_seek fixtures/seek.c canon.c)
+target_include_directories(test_fixture_seek PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(test_fixture_seek PRIVATE bartap)
+target_compile_options(test_fixture_seek PRIVATE ${BARTAP_WARNING_FLAGS})
+set_target_properties(test_fixture_seek PROPERTIES C_EXTENSIONS OFF)
+add_dependencies(test_fixture_seek bartap_fixtures)
+add_test(NAME test_fixture_seek COMMAND test_fixture_seek ${fixture_files})
+
 # Fuzz targets, replayed over generated documents in every run, at two read-aheads. Pass files to
 # these executables to replay a corpus or a crash.
 bartap_add_sized_executable(fuzz_xml_replay "BARTAP_XML_READAHEAD=256" fuzz/fuzz_xml.c fuzz/fuzz_main.c)
@@ -98,9 +162,14 @@ bartap_add_sized_executable(fuzz_open_replay_buffers1 "BARTAP_XML_READAHEAD=1;BA
     fuzz/fuzz_open.c fuzz/fuzz_main.c)
 add_test(NAME fuzz_open_replay COMMAND fuzz_open_replay)
 add_test(NAME fuzz_open_replay_buffers1 COMMAND fuzz_open_replay_buffers1)
+bartap_add_sized_executable(fuzz_text_replay "BARTAP_XML_READAHEAD=256" fuzz/fuzz_text.c fuzz/fuzz_main.c)
+bartap_add_sized_executable(fuzz_text_replay_buffers1 "BARTAP_XML_READAHEAD=1;BARTAP_INPUT_BUF=1"
+    fuzz/fuzz_text.c fuzz/fuzz_main.c)
+add_test(NAME fuzz_text_replay COMMAND fuzz_text_replay)
+add_test(NAME fuzz_text_replay_buffers1 COMMAND fuzz_text_replay_buffers1)
 
 # libFuzzer builds, with clang: cmake -DBARTAP_FUZZ=ON -DCMAKE_C_COMPILER=clang, then run
-# build/tests/fuzz_xml corpus/ (and fuzz_xml_readahead1, fuzz_open). Then replay the tokenizer's
+# build/tests/fuzz_xml corpus/ (and fuzz_xml_readahead1, fuzz_open, fuzz_text). Then replay the tokenizer's
 # corpus through xml_hash and xml_hash_readahead1 with compare_outputs.py to check R33 on what the
 # fuzzer found.
 if(BARTAP_FUZZ)
@@ -116,9 +185,11 @@ if(BARTAP_FUZZ)
         target_compile_options(${name} PRIVATE -fsanitize=fuzzer,address,undefined -g)
         target_link_options(${name} PRIVATE -fsanitize=fuzzer,address,undefined)
     endforeach()
-    bartap_add_sized_executable(fuzz_open "BARTAP_XML_READAHEAD=256" fuzz/fuzz_open.c)
-    target_compile_options(fuzz_open PRIVATE -fsanitize=fuzzer,address,undefined -g)
-    target_link_options(fuzz_open PRIVATE -fsanitize=fuzzer,address,undefined)
+    foreach(target fuzz_open fuzz_text)
+        bartap_add_sized_executable(${target} "BARTAP_XML_READAHEAD=256" fuzz/${target}.c)
+        target_compile_options(${target} PRIVATE -fsanitize=fuzzer,address,undefined -g)
+        target_link_options(${target} PRIVATE -fsanitize=fuzzer,address,undefined)
+    endforeach()
 endif()
 
 # Sanitizer runtimes add symbols of their own, so the check only means something on a plain build.

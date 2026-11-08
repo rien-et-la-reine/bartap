@@ -24,4 +24,22 @@ typedef void (*canon_sink_fn)(void *user, const uint8_t *data, size_t len);
  */
 bool canon_record(const bartap_record_t *rec, canon_sink_fn sink, void *user);
 
+/* The record stream with text merged, so its bytes depend only on content, never on the text
+ * buffer's size (R6, R50). Every record is as canon_record writes it, except a run of consecutive
+ * TEXT records, which becomes 04, the run's bytes, then 00. Text never holds a NUL (R21), so the 00
+ * is unambiguous, and nothing is buffered: a device with a small text buffer streams the same bytes
+ * (R51). Zero-initialize, set sink and user, then call canon_stream_end after the last record. */
+typedef struct {
+    canon_sink_fn sink;
+    void *user;
+    bool in_text;
+} canon_stream_t;
+
+bool canon_stream_record(canon_stream_t *s, const bartap_record_t *rec);
+void canon_stream_end(canon_stream_t *s);
+
+/* FNV-1a, 64 bits, as a sink: user points to the running value, which starts at CANON_HASH_INIT. */
+#define CANON_HASH_INIT 0xCBF29CE484222325ull
+void canon_hash_sink(void *user, const uint8_t *data, size_t len);
+
 #endif /* BARTAP_CANON_H */

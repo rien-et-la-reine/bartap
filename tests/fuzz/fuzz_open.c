@@ -7,7 +7,8 @@
  *   - an opened book's limits hold: spine count within capacity and required, metadata within its
  *     fields, every filled slot's entry where the directory says;
  *   - every spine item and the cover read the same bytes and end the same way in both modes, and
- *     verify agrees with reading (R31). */
+ *     verify agrees with reading (R31);
+ *   - the TOC and every item's text run to their ends within bounds, with well-formed entries (R26). */
 #include "epub_build.h"
 #include "internal.h"
 
@@ -31,6 +32,62 @@ static bartap_resource_t res;
 static bartap_verify_t verify;
 static uint8_t chunk[4096];
 static uint8_t first[READ_LIMIT];
+static bartap_toc_t toc;
+static bartap_text_t fz_text;
+static char text_buf[64];
+
+#define RECORD_LIMIT (1u << 20) /* stop reading text here, a bomb's declared size can be large */
+
+/* The TOC to its end: entries point into the spine or nowhere, fragments within attribute storage. */
+static void check_toc(const bartap_book_t *book, size_t size)
+{
+    bartap_record_t r;
+    bartap_err_t err = bartap_toc_open(&toc, book, window, text_buf, sizeof text_buf, NULL, NULL);
+    if (err != BARTAP_OK) {
+        FUZZ_CHECK(err == BARTAP_END || err < 0);
+        return;
+    }
+    uint32_t n = 0;
+    while ((err = bartap_toc_next(&toc, &r)) == BARTAP_OK) {
+        FUZZ_CHECK(++n <= 8u * (uint32_t)size + 64u);
+        if (r.kind == BARTAP_REC_TOC_ENTRY) {
+            FUZZ_CHECK(r.toc.spine_index == BARTAP_NO_SPINE || r.toc.spine_index < book->spine_count);
+            FUZZ_CHECK(r.toc.fragment_len <= BARTAP_ATTR_MAX);
+            FUZZ_CHECK((r.toc.fragment == NULL) == (r.toc.fragment_len == 0));
+        } else if (r.kind == BARTAP_REC_TEXT) {
+            FUZZ_CHECK(r.text.len >= 1 && r.text.len <= sizeof text_buf);
+        } else {
+            FUZZ_CHECK(r.kind == BARTAP_REC_STYLE);
+        }
+    }
+    FUZZ_CHECK(err == BARTAP_END || err < 0);
+}
+
+/* Every item's text, to its end or a failure, containers balanced. */
+static void check_text(const bartap_book_t *book)
+{
+    for (uint16_t i = 0; i < book->spine_count; i++) {
+        bartap_record_t r;
+        bartap_err_t err = bartap_text_open(&fz_text, book, i, window, text_buf, sizeof text_buf, NULL, NULL, NULL);
+        if (err != BARTAP_OK) {
+            FUZZ_CHECK(err < 0);
+            continue;
+        }
+        int32_t depth = 0;
+        uint32_t n = 0;
+        while (n++ < RECORD_LIMIT && (err = bartap_text_next(&fz_text, &r)) == BARTAP_OK) {
+            if (r.kind == BARTAP_REC_CONTAINER_START) {
+                depth++;
+            } else if (r.kind == BARTAP_REC_CONTAINER_END) {
+                FUZZ_CHECK(--depth >= 0);
+            } else if (r.kind == BARTAP_REC_TEXT) {
+                FUZZ_CHECK(r.text.len >= 1 && r.text.len <= sizeof text_buf);
+            }
+        }
+        FUZZ_CHECK(err == BARTAP_OK || err == BARTAP_END || err < 0);
+        FUZZ_CHECK(err != BARTAP_END || depth == 0);
+    }
+}
 
 /* Reads an opened resource up to READ_LIMIT, into first (pass 0) or checked against it (pass 1). */
 static bartap_err_t read_resource(int pass, uint32_t *total)
@@ -148,6 +205,8 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
             (void)read_resource(0, &total);
         }
     }
+    check_toc(a, size);
+    check_text(a);
     return 0;
 }
 
@@ -203,6 +262,18 @@ size_t fuzz_generate(uint32_t seed, uint8_t *out, size_t cap)
             }
             epub_add(&e, name, text.s, gen_random(&state) % 2u ? EPUB_STORED : EPUB_DEFLATED);
         }
+    }
+    if (chapters > 0 && gen_random(&state) % 3u == 0) {
+        /* a nav, its links resolvable or not */
+        text.len = 0;
+        str_add(&text, "<html><body><nav epub:type=\"toc\"><ol>");
+        for (uint32_t i = 0; i < chapters; i++) {
+            str_add(&text, "<li><a href=\"%s#f%u\">L%u</a>%s</li>", gen_random(&state) % 2u ? "c0.xhtml" : "../x.xhtml",
+                    i, i, gen_random(&state) % 4u == 0 ? "<ol><li><span>s</span></li></ol>" : "");
+        }
+        str_add(&text, "</ol></nav></body></html>");
+        epub_add(&e, "nav.xhtml", text.s, EPUB_DEFLATED);
+        str_add(&manifest, "<item id=\"nav\" href=\"nav.xhtml\" properties=\"nav\"/>");
     }
     const char *opf = gen_random(&state) % 2u ? "c.opf" : "x/c.opf";
     epub_add_opf(&e, opf, "u",

@@ -106,5 +106,51 @@ int main(void)
     CHECK(!canon_record(&r, capture, &c));
     CHECK(c.len == 0);
 
+    /* The merged stream: a text run is 04, its bytes, 00, however it was split (R50). */
+    bartap_record_t style = junk_record(BARTAP_REC_STYLE);
+    style.style.bits = 1;
+    bartap_record_t brk = junk_record(BARTAP_REC_LINE_BREAK);
+    static const char *const splits[][3] = {{"abc", NULL, NULL}, {"a", "bc", NULL}, {"a", "b", "c"}};
+    static const uint8_t merged[] = {0x05, 0x01, 0x00, 0x00, 0x00, 0x04, 'a', 'b', 'c', 0x00, 0x07,
+                                     0x04, 'd', 0x00};
+    for (size_t k = 0; k < sizeof splits / sizeof splits[0]; k++) {
+        capture_t m = {{0}, 0};
+        canon_stream_t s = {capture, &m, false};
+        CHECK(canon_stream_record(&s, &style));
+        for (size_t i = 0; i < 3 && splits[k][i] != NULL; i++) {
+            r = junk_record(BARTAP_REC_TEXT);
+            r.text.ptr = splits[k][i];
+            r.text.len = (uint32_t)strlen(splits[k][i]);
+            CHECK(canon_stream_record(&s, &r));
+        }
+        CHECK(canon_stream_record(&s, &brk));
+        r = junk_record(BARTAP_REC_TEXT);
+        r.text.ptr = "d";
+        r.text.len = 1;
+        CHECK(canon_stream_record(&s, &r));
+        /* the end closes a run still open, once */
+        canon_stream_end(&s);
+        canon_stream_end(&s);
+        CHECK(m.len == sizeof merged && memcmp(m.bytes, merged, sizeof merged) == 0);
+    }
+    /* a bad text record refuses and writes nothing */
+    capture_t m = {{0}, 0};
+    canon_stream_t s = {capture, &m, false};
+    r = junk_record(BARTAP_REC_TEXT);
+    r.text.ptr = NULL;
+    r.text.len = 1;
+    CHECK(!canon_stream_record(&s, &r));
+    canon_stream_end(&s);
+    CHECK(m.len == 0);
+
+    /* FNV-1a 64 against its published values */
+    uint64_t h = CANON_HASH_INIT;
+    CHECK(h == 0xCBF29CE484222325ull);
+    canon_hash_sink(&h, (const uint8_t *)"a", 1);
+    CHECK(h == 0xAF63DC4C8601EC8Cull);
+    h = CANON_HASH_INIT;
+    canon_hash_sink(&h, (const uint8_t *)"foo", 3);
+    CHECK(h == 0xDCB27518FED9D577ull);
+
     return CHECK_RESULT();
 }

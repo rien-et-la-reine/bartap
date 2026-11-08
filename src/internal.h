@@ -18,7 +18,7 @@ uint32_t bt_name_hash(uint32_t hash, const void *name, size_t len);
  * A range outside the archive is BARTAP_ERR_CORRUPT and never reaches the callback. */
 bartap_err_t bt_read(const bartap_source_t *src, uint32_t offset, uint8_t *buf, uint32_t len);
 
-/* Sets the sticky bit and calls the callback, if any (R32). */
+/* Sets the sticky bit and calls the callback, if any and offset isn't below quiet_below (R32, R49). */
 void bt_warn(bartap_warnings_t *warnings, bartap_warning_t code, uint16_t spine_index,
              uint32_t offset);
 
@@ -57,6 +57,9 @@ bartap_err_t bt_dir_name(const bartap_directory_t *dir, uint32_t dir_offset, cha
 /* First in directory order wins (R44). BARTAP_END if no entry matches. */
 bartap_err_t bt_dir_find(const bartap_directory_t *dir, const char *name, uint16_t name_len,
                          bartap_entry_t *entry);
+
+/* A spine item's entry. BARTAP_ERR_ARG past the spine, BARTAP_ERR_CORRUPT if the item has no entry. */
+bartap_err_t bt_spine_entry(const bartap_book_t *book, uint16_t spine_index, bartap_entry_t *entry);
 
 /* Entry streams (R31). */
 bartap_err_t bt_stream_open(bartap_stream_t *stream, const bartap_source_t *source,
@@ -145,8 +148,6 @@ bartap_err_t bt_match_spine(bartap_book_t *book, bartap_open_work_t *work);
 
 /* ---- text.c ---- */
 
-/* Stubs from here on. Those returning bartap_err_t return BARTAP_ERR_UNSUPPORTED until implemented. */
-
 /* Element classes (R46). Returns a tag index below BARTAP_TAG_COUNT, or BARTAP_TAG_COUNT if unknown. */
 uint8_t bt_tag_lookup(const char *name, uint32_t name_len);
 
@@ -154,7 +155,8 @@ uint8_t bt_tag_lookup(const char *name, uint32_t name_len);
  * the next token on: queued starts come out first, then frames an end tag unwound. */
 bool bt_text_emit_pending(bartap_text_t *text, bartap_record_t *rec);
 
-/* Handle one tag, updating frames and queuing records (R45, R46, R47). */
+/* Handle one tag, updating frames and queuing records (R45, R46, R47). A start tag carrying
+ * text->find_id sets text->id_found (R13). */
 bartap_err_t bt_text_start_tag(bartap_text_t *text, const bartap_xml_token_t *token);
 bartap_err_t bt_text_end_tag(bartap_text_t *text, const bartap_xml_token_t *token);
 
@@ -165,15 +167,21 @@ bartap_err_t bt_text_fill(bartap_text_t *text, bartap_record_t *rec);
 /* The source ended: queues the closing of everything still open (R47 rule 4). */
 void bt_text_finish(bartap_text_t *text);
 
+/* The class of a tag from bt_tag_lookup, and an inline tag's style bit (0 for other classes). */
+bool bt_tag_is_inline(uint8_t tag, uint32_t *style_bit);
+
 /* The image record's directory offset (R9). BARTAP_END if it cannot be resolved. */
 bartap_err_t bt_image_lookup(bartap_text_t *text, const char *src, uint32_t src_len,
                              uint32_t *dir_offset);
 
-/* Checkpoints (R48). */
+/* Checkpoints (R48). take keeps one only when block_offset has reached the next due; restore, only for
+ * one still held in the ring, leaves the text where the snapshot was, an explicit block's tag handled. */
 void bt_checkpoint_take(bartap_text_t *text, uint32_t block_offset, uint32_t resume_offset);
 bartap_err_t bt_checkpoint_restore(bartap_text_t *text, const bartap_checkpoint_t *checkpoint);
 
-/* Replays to a landing without copying text or looking up images (R49). */
+/* Replays to a landing without copying text or looking up images, then queues R49's context.
+ * BARTAP_END if it isn't one: not a block start, or a character offset past the block's text or
+ * inside a character. Other failures are the source's. */
 bartap_err_t bt_text_replay(bartap_text_t *text, uint32_t block_offset, uint32_t char_offset);
 
 #endif /* BARTAP_INTERNAL_H */

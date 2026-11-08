@@ -29,7 +29,7 @@ void bt_warn(bartap_warnings_t *warnings, bartap_warning_t code, uint16_t spine_
              uint32_t offset)
 {
     warnings->bits |= (uint32_t)code;
-    if (warnings->fn != NULL) {
+    if (warnings->fn != NULL && offset >= warnings->quiet_below) {
         warnings->fn(warnings->user, code, spine_index, offset);
     }
 }
@@ -566,7 +566,7 @@ bartap_err_t bt_inflate_fill(bartap_stream_t *stream)
     bartap_inflate_t *inf = &stream->inflate;
 
     // Each pass does one bounded unit of work, so the space check runs before every symbol.
-    while (true) {
+    for (;;) {
         bartap_err_t err;
 
         if (window_space(stream) < BT_INFLATE_MAX_MATCH) {
@@ -1352,8 +1352,7 @@ static bartap_err_t stream_fail(bartap_stream_t *stream, bartap_err_t err)
 
 // The entry facts a spine slot already holds, copied from its directory record when the book
 // opened (R22), so a spine lookup needs no directory read.
-static bartap_err_t spine_entry(const bartap_book_t *book, uint16_t spine_index,
-                               bartap_entry_t *entry)
+bartap_err_t bt_spine_entry(const bartap_book_t *book, uint16_t spine_index, bartap_entry_t *entry)
 {
     if (spine_index >= book->spine_count) {
         // past the spine the book holds, the caller's mistake
@@ -1380,7 +1379,7 @@ bartap_err_t bartap_verify_init(bartap_verify_t *verify, const bartap_book_t *bo
 {
     bartap_entry_t entry;
 
-    bartap_err_t err = spine_entry(book, spine_index, &entry);
+    bartap_err_t err = bt_spine_entry(book, spine_index, &entry);
     if (err != BARTAP_OK) {
         // bad index, mark the stream unopened so a step only repeats this
         return stream_fail(&verify->stream, err);
@@ -1486,7 +1485,7 @@ bartap_err_t bartap_resource_open_spine(bartap_resource_t *res, const bartap_boo
 {
     bartap_entry_t entry;
 
-    bartap_err_t err = spine_entry(book, spine_index, &entry);
+    bartap_err_t err = bt_spine_entry(book, spine_index, &entry);
     if (err != BARTAP_OK) {
         // bad index, mark the stream unopened so a read only repeats this
         return stream_fail(&res->stream, err);

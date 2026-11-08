@@ -200,7 +200,7 @@ static inline bartap_err_t xml_dump_run(xml_dump_t *d, bartap_xml_t *xml, uint32
 
 static inline bartap_warnings_t dump_warnings(xml_dump_t *d)
 {
-    bartap_warnings_t w = {0, dump_on_warn, d};
+    bartap_warnings_t w = {0, dump_on_warn, d, 0};
     return w;
 }
 

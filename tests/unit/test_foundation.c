@@ -58,7 +58,7 @@ static void warn_spy(void *user, bartap_warning_t code, uint16_t spine, uint32_t
 static void test_warnings(void)
 {
     /* NULL callback is valid; bits are sticky and accumulate. */
-    bartap_warnings_t w = {0, NULL, NULL};
+    bartap_warnings_t w = {0, NULL, NULL, 0};
     bt_warn(&w, BARTAP_WARN_CONTROL_CHAR, 1, 2);
     bt_warn(&w, BARTAP_WARN_DEPTH_EXCEEDED, 1, 2);
     bt_warn(&w, BARTAP_WARN_CONTROL_CHAR, 1, 2);
@@ -66,7 +66,7 @@ static void test_warnings(void)
 
     /* The callback fires at each occurrence, with its context. */
     int token = 0;
-    bartap_warnings_t c = {0, warn_spy, &token};
+    bartap_warnings_t c = {0, warn_spy, &token, 0};
     bt_warn(&c, BARTAP_WARN_BROKEN_LINK, 7, 1234);
     bt_warn(&c, BARTAP_WARN_BROKEN_LINK, BARTAP_NO_SPINE, 5678);
     CHECK(warn_seen.calls == 2);
@@ -74,6 +74,14 @@ static void test_warnings(void)
     CHECK(warn_seen.code == BARTAP_WARN_BROKEN_LINK);
     CHECK(warn_seen.spine == BARTAP_NO_SPINE);
     CHECK(warn_seen.offset == 5678);
+
+    /* During a replay the callback is quiet below quiet_below, but the bit is still set (R49). */
+    c.quiet_below = 100;
+    c.bits = 0;
+    bt_warn(&c, BARTAP_WARN_CONTROL_CHAR, 1, 99);
+    CHECK(warn_seen.calls == 2 && c.bits == (uint32_t)BARTAP_WARN_CONTROL_CHAR);
+    bt_warn(&c, BARTAP_WARN_CONTROL_CHAR, 1, 100);
+    CHECK(warn_seen.calls == 3);
 }
 
 static int read_calls;

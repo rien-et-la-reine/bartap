@@ -170,7 +170,10 @@ Character offsets in bookmarks count the bytes of text records only, never other
   block offset) and starting character offset. The starting character offset is 0, except for the
   first block after a seek that lands inside a block (R49).
 - The block offset of a block with no start tag (an implicit paragraph, or a restart under R46) is the
-  offset of the token that triggered it: the first non-whitespace text byte, or the `<` of an image.
+  offset of the token that triggered it: the first byte of the text token holding the first
+  non-whitespace character (its `<` for CDATA), or the `<` of an image or `br`. Not the character's own
+  byte, which can sit inside CDATA or an entity where parsing cannot resume (R48); the whitespace
+  before it collapses away on replay, so the output is the same.
 
 ## R17 — A text stream covers one spine item
 
@@ -280,6 +283,12 @@ Character offsets in bookmarks count the bytes of text records only, never other
   so the loop stays bounded (R29).
 - An entry whose target cannot be resolved is still returned, with spine index `BARTAP_NO_SPINE` and a
   warning. Only `nav` with `toc` among its `epub:type` tokens is read.
+- An entry with no target at all differs by format:
+  - In nav, a `<span>` label is a valid heading over its children, so it is returned with
+    `BARTAP_NO_SPINE` and no warning.
+  - In NCX, `<content>` is required. A `navPoint` without one is skipped, with a TOC-target warning.
+    Its children keep their depth, so they appear one level below a missing parent.
+  - Nav and NCX versions of a valid book therefore still give identical entries.
 
 ## R27 — Every inflating call takes its window explicitly
 
@@ -709,10 +718,7 @@ still locates the nav and NCX entries.
   4. One full directory walk fills the slots. A spine item missing from the archive gets a warning and
      fails only when opened.
 
-API still to add: `bartap_open`, `bartap_text_open[_memory]`, `bartap_text_next`, `bartap_text_seek`,
-`bartap_toc_open`, `bartap_toc_next`, `bartap_toc_resolve`, `bartap_resource_open[_dir]`,
-`bartap_resource_read`, `bartap_verify_init`, `bartap_verify_step`, `bartap_bookmark_write`,
-`bartap_warnings`, `bartap_rolling_init`.
+The whole API is in place (phases 2 to 9 below); `include/bartap.h` is its reference.
 
 ### Phases
 

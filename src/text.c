@@ -16,7 +16,15 @@ enum {
     CLASS_BREAK
 };
 
-enum { EMIT_NONE = 0, EMIT_CONTAINER_START, EMIT_BLOCK_START, EMIT_STYLE, EMIT_IMAGE, EMIT_BREAK };
+enum {
+    EMIT_NONE = 0,
+    EMIT_CONTEXT, /* container starts for every open container, after a seek (R49) */
+    EMIT_CONTAINER_START,
+    EMIT_BLOCK_START,
+    EMIT_STYLE,
+    EMIT_IMAGE,
+    EMIT_BREAK
+};
 
 #define FRAME_REVERSED 0x01u /* a reversed list with a start, counting down (R45) */
 #define FRAME_LIST 0x02u     /* ol or ul, which number the items inside them */
@@ -166,6 +174,8 @@ static void begin_block(bartap_text_t *text, uint8_t kind, uint8_t level, uint32
 static void begin_content(bartap_text_t *text, uint32_t offset, uint8_t after)
 {
     bartap_parse_state_t *p = &text->parse;
+    // the state before the triggering token, which a restore processes again (R48)
+    bt_checkpoint_take(text, offset, offset);
     for (uint8_t i = p->depth; i > 0; i--) {
         const bartap_frame_t *f = &p->frames[i - 1u];
         if (f->class_kind == CLASS_CONTAINER) {
@@ -218,21 +228,37 @@ static bool pop_frame(bartap_parse_state_t *p, bartap_record_t *rec)
     }
 }
 
+static void container_start(const bartap_frame_t *f, bartap_record_t *rec)
+{
+    rec->kind = BARTAP_REC_CONTAINER_START;
+    rec->container.kind = (bartap_container_kind_t)container_kind(f);
+    // items keep their own number, so a seek into a list restates it (R45)
+    rec->container.ordinal = tags[f->tag].kind == BARTAP_CONTAINER_LI ? f->ordinal : 0;
+}
+
 bool bt_text_emit_pending(bartap_text_t *text, bartap_record_t *rec)
 {
     bartap_parse_state_t *p = &text->parse;
 
     // starts first, so a self-closing tag's start comes out before its end
     switch (text->emit_state) {
-    case EMIT_CONTAINER_START: {
+    case EMIT_CONTEXT:
+        // after a seek, every container open at the target, outermost first (R49)
+        while (text->emit_index < p->depth) {
+            const bartap_frame_t *f = &p->frames[text->emit_index++];
+            if (f->class_kind == CLASS_CONTAINER) {
+                container_start(f, rec);
+                return true;
+            }
+        }
+        // then the block, its style and whatever the landing token queued
+        text->emit_state = EMIT_BLOCK_START;
+        return bt_text_emit_pending(text, rec);
+    case EMIT_CONTAINER_START:
         // the container is the top frame, nothing has been pushed since
-        const bartap_frame_t *f = &p->frames[p->depth - 1u];
-        rec->kind = BARTAP_REC_CONTAINER_START;
-        rec->container.kind = (bartap_container_kind_t)container_kind(f);
-        rec->container.ordinal = tags[f->tag].kind == BARTAP_CONTAINER_LI ? f->ordinal : 0;
+        container_start(&p->frames[p->depth - 1u], rec);
         text->emit_state = EMIT_NONE;
         return true;
-    }
     case EMIT_BLOCK_START:
         rec->kind = BARTAP_REC_BLOCK_START;
         rec->block.kind = (bartap_block_kind_t)p->block_kind;
@@ -420,6 +446,10 @@ static void start_block(bartap_text_t *text, uint8_t tag, const bartap_xml_token
         // hr takes no frame, so content after it opens a block of its own
         p->block_live = 0;
     }
+    if (!(framed && token->self_closing)) {
+        // just past the tag (R48). not <p/>, whose close a restore past the tag would miss
+        bt_checkpoint_take(text, token->offset, token->end_offset);
+    }
 }
 
 static void start_container(bartap_text_t *text, uint8_t tag, const bartap_xml_token_t *token)
@@ -448,40 +478,55 @@ static void start_boundary(bartap_text_t *text, uint8_t tag, const bartap_xml_to
     }
 }
 
+// Looks the current image tag's source up: EMIT_IMAGE with its offset kept, or EMIT_NONE with a
+// warning if it can't be resolved (R9). The tag must still be the tokenizer's current token.
+static bartap_err_t resolve_image(bartap_text_t *text, uint8_t *after)
+{
+    const char *src = NULL;
+    uint32_t src_len = 0;
+
+    if (!bt_xml_attr(&text->xml, "src", sizeof "src" - 1u, &src, &src_len) &&
+        !bt_xml_attr(&text->xml, "xlink:href", sizeof "xlink:href" - 1u, &src, &src_len)) {
+        // SVG 2 drops the prefix
+        (void)bt_xml_attr(&text->xml, "href", sizeof "href" - 1u, &src, &src_len);
+    }
+    bartap_err_t err = bt_image_lookup(text, src, src_len, &text->image_dir_offset);
+    if (err == BARTAP_OK) {
+        *after = EMIT_IMAGE;
+        return BARTAP_OK;
+    }
+    *after = EMIT_NONE;
+    if (err == BARTAP_END) {
+        // no record, but still content
+        text_warn(text, BARTAP_WARN_IMAGE_UNRESOLVED, text->xml.token.offset);
+        return BARTAP_OK;
+    }
+    // the card failed, pass error up
+    return err;
+}
+
 // Images are content wherever they sit (R5), resolved or not, so replay needs no lookup (R49).
 // Only the record depends on the lookup (R9).
 static bartap_err_t start_image(bartap_text_t *text, const bartap_xml_token_t *token)
 {
     bartap_parse_state_t *p = &text->parse;
-    const char *src = NULL;
-    uint32_t src_len = 0;
-    uint8_t after = EMIT_NONE;
+    uint8_t after = EMIT_IMAGE;
 
     if (!text->replaying) {
-        if (!bt_xml_attr(&text->xml, "src", sizeof "src" - 1u, &src, &src_len) &&
-            !bt_xml_attr(&text->xml, "xlink:href", sizeof "xlink:href" - 1u, &src, &src_len)) {
-            // SVG 2 drops the prefix
-            (void)bt_xml_attr(&text->xml, "href", sizeof "href" - 1u, &src, &src_len);
-        }
-        bartap_err_t err = bt_image_lookup(text, src, src_len, &text->image_dir_offset);
-        if (err == BARTAP_OK) {
-            after = EMIT_IMAGE;
-        } else if (err == BARTAP_END) {
-            // no record, but still content
-            text_warn(text, BARTAP_WARN_IMAGE_UNRESOLVED, token->offset);
-        } else {
-            // the card failed, pass error up
+        bartap_err_t err = resolve_image(text, &after);
+        if (err != BARTAP_OK) {
             return err;
         }
     }
-    // a break opportunity either side, spaces around it go (R4, R6)
-    p->space_pending = 0;
-    p->space_allowed = 0;
+    // replaying, it stays queued unresolved: a landing on the block it opens looks it up then
     if (!p->block_live) {
         begin_content(text, token->offset, after);
     } else {
         text->emit_state = after;
     }
+    // a break opportunity either side, spaces around it go (R4, R6)
+    p->space_pending = 0;
+    p->space_allowed = 0;
     p->block_has_content = 1;
     return BARTAP_OK;
 }
@@ -489,19 +534,29 @@ static bartap_err_t start_image(bartap_text_t *text, const bartap_xml_token_t *t
 static void start_break(bartap_text_t *text, const bartap_xml_token_t *token)
 {
     bartap_parse_state_t *p = &text->parse;
-    // a new line starts with no space
-    p->space_pending = 0;
-    p->space_allowed = 0;
     if (!p->block_live) {
         // a break on its own, as books use for blank lines, gets a block to be in
         begin_content(text, token->offset, EMIT_BREAK);
     } else {
         text->emit_state = EMIT_BREAK;
     }
+    // a new line starts with no space
+    p->space_pending = 0;
+    p->space_allowed = 0;
     p->block_has_content = 1;
 }
 
-bartap_err_t bt_text_start_tag(bartap_text_t *text, const bartap_xml_token_t *token)
+bool bt_tag_is_inline(uint8_t tag, uint32_t *style_bit)
+{
+    if (tag >= BARTAP_TAG_COUNT || tags[tag].class_kind != CLASS_INLINE) {
+        *style_bit = 0;
+        return false;
+    }
+    *style_bit = tags[tag].kind;
+    return true;
+}
+
+static bartap_err_t start_tag(bartap_text_t *text, const bartap_xml_token_t *token)
 {
     bartap_parse_state_t *p = &text->parse;
     uint8_t tag = bt_tag_lookup(token->name, token->name_len);
@@ -562,6 +617,25 @@ bartap_err_t bt_text_start_tag(bartap_text_t *text, const bartap_xml_token_t *to
     }
     // <p/> and the like open and close at once
     return token->self_closing ? bt_text_end_tag(text, token) : BARTAP_OK;
+}
+
+bartap_err_t bt_text_start_tag(bartap_text_t *text, const bartap_xml_token_t *token)
+{
+    // skipped content first: an id inside head isn't a place in the text
+    bool skipping = text->parse.skip_depth != 0;
+    bartap_err_t err = start_tag(text, token);
+    if (err != BARTAP_OK || text->find_id == NULL || skipping) {
+        return err;
+    }
+    // any element's id counts, transparent ones too (R13, R46). checked after the tag is handled,
+    // so an id on a block start finds that block
+    const char *id;
+    uint32_t id_len;
+    if (bt_xml_attr(&text->xml, "id", sizeof "id" - 1u, &id, &id_len) &&
+        id_len == text->find_id_len && memcmp(id, text->find_id, id_len) == 0) {
+        text->id_found = 1;
+    }
+    return BARTAP_OK;
 }
 
 bartap_err_t bt_text_end_tag(bartap_text_t *text, const bartap_xml_token_t *token)
@@ -638,10 +712,15 @@ static bartap_err_t text_record(bartap_text_t *text, bartap_record_t *rec, uint3
 bartap_err_t bt_text_fill(bartap_text_t *text, bartap_record_t *rec)
 {
     bartap_parse_state_t *p = &text->parse;
-    char *buf = text->text_buf;
+    // a replay copies nothing (R49), it only counts
+    char *buf = text->replaying ? NULL : text->text_buf;
     uint32_t cap = text->text_cap;
     uint32_t n = 0;
 
+    if (text->landing) {
+        // in the target block, stop exactly at its character offset. never 0, it lands there
+        cap = text->target_char - p->char_offset;
+    }
     if (p->skip_depth != 0) {
         // skipped content, the tokenizer runs it out
         return BARTAP_END;
@@ -711,7 +790,9 @@ bartap_err_t bt_text_fill(bartap_text_t *text, bartap_record_t *rec)
             if (p->space_pending && p->style != p->style_out) {
                 // the space alone, the text after it needs another style
                 p->space_pending = 0;
-                buf[0] = ' ';
+                if (buf != NULL) {
+                    buf[0] = ' ';
+                }
                 return text_record(text, rec, 1);
             }
         }
@@ -721,20 +802,31 @@ bartap_err_t bt_text_fill(bartap_text_t *text, bartap_record_t *rec)
             c = ' ';
         }
         if (p->space_pending + len > cap - n) {
+            if (n == 0 && !p->space_pending) {
+                // only a landing caps below one character: it falls inside this one (R12)
+                return BARTAP_ERR_ARG;
+            }
             if (n == 0) {
                 // a 4-byte character and its space can't share a minimum buffer, the space goes alone
                 p->space_pending = 0;
-                buf[0] = ' ';
+                if (buf != NULL) {
+                    buf[0] = ' ';
+                }
                 n = 1;
             }
             break;
         }
         if (p->space_pending) {
-            buf[n++] = ' ';
+            if (buf != NULL) {
+                buf[n] = ' ';
+            }
+            n++;
             p->space_pending = 0;
         }
-        buf[n] = c;
-        memcpy(buf + n + 1u, text->stash + text->stash_pos + 1u, len - 1u);
+        if (buf != NULL) {
+            buf[n] = c;
+            memcpy(buf + n + 1u, text->stash + text->stash_pos + 1u, len - 1u);
+        }
         n += len;
         text->stash_pos = (uint8_t)(text->stash_pos + len);
         p->block_has_content = 1;
@@ -775,20 +867,78 @@ bartap_err_t bt_image_lookup(bartap_text_t *text, const char *src, uint32_t src_
 
 /* ---- Text streams (R11, R17, R20) ---- */
 
+// What both modes share: argument checks, the item's entry and path, and a fresh parse. The byte
+// source is the caller's to set up after. A failure after the reset is kept, so next repeats it.
+static bartap_err_t text_init(bartap_text_t *text, const bartap_book_t *book, uint16_t spine_index,
+                              char *text_buf, uint32_t text_cap, bartap_warn_fn warn_fn,
+                              void *warn_user, bartap_entry_t *entry)
+{
+    if (text == NULL) {
+        // nowhere to keep the failure
+        return BARTAP_ERR_ARG;
+    }
+    memset(text, 0, sizeof *text);
+    text->book = book;
+    text->spine_index = spine_index;
+    text->text_buf = text_buf;
+    text->text_cap = text_cap;
+    text->unwind_to = UNWIND_NONE;
+    text->warnings.fn = warn_fn;
+    text->warnings.user = warn_user;
+
+    if (book == NULL || text_buf == NULL) {
+        text->status = BARTAP_ERR_ARG;
+        return text->status;
+    }
+    if (text_cap < BARTAP_TEXT_MIN) {
+        // can't hold one whole character (R50)
+        text->status = BARTAP_ERR_BUFFER_TOO_SMALL;
+        return text->status;
+    }
+    bartap_err_t err = bt_spine_entry(book, spine_index, entry);
+    if (err != BARTAP_OK) {
+        // past the spine, or an item with no entry
+        text->status = err;
+        return err;
+    }
+    // the item's own path, for resolving image paths (R22). it matched a resolved href at open, so it
+    // fits: anything else here is the card failing
+    uint16_t len;
+    err = bt_dir_name(&book->directory, entry->dir_offset, text->base_dir, BARTAP_PATH_MAX, &len);
+    if (err != BARTAP_OK) {
+        text->status = err == BARTAP_ERR_BUFFER_TOO_SMALL ? BARTAP_ERR_CORRUPT : err;
+        return text->status;
+    }
+    text->base_dir_len = len;
+    return BARTAP_OK;
+}
+
 bartap_err_t bartap_text_open(bartap_text_t *text, const bartap_book_t *book, uint16_t spine_index,
                               uint8_t *window, char *text_buf, uint32_t text_cap,
                               bartap_rolling_t *rolling, bartap_warn_fn warn_fn, void *warn_user)
 {
-    (void)text;
-    (void)book;
-    (void)spine_index;
-    (void)window;
-    (void)text_buf;
-    (void)text_cap;
-    (void)rolling;
-    (void)warn_fn;
-    (void)warn_user;
-    return BARTAP_ERR_UNSUPPORTED;
+    bartap_entry_t entry;
+
+    bartap_err_t err = text_init(text, book, spine_index, text_buf, text_cap, warn_fn, warn_user,
+                                 &entry);
+    if (err != BARTAP_OK) {
+        return err;
+    }
+    if (window == NULL || (rolling != NULL && rolling->ring == NULL)) {
+        // stream mode needs a window, and a ring that holds bytes: a virtual one is memory mode's
+        text->status = BARTAP_ERR_ARG;
+        return text->status;
+    }
+    err = bt_stream_open(&text->stream, book->source, &entry, window);
+    if (err != BARTAP_OK) {
+        // bad local header or method, pass error up
+        text->status = err;
+        return err;
+    }
+    text->rolling = rolling;
+    bt_bytes_init_stream(&text->bytes, &text->stream, rolling);
+    bt_xml_init(&text->xml, &text->bytes, &text->warnings, spine_index);
+    return BARTAP_OK;
 }
 
 bartap_err_t bartap_text_open_memory(bartap_text_t *text, const bartap_book_t *book,
@@ -796,122 +946,1031 @@ bartap_err_t bartap_text_open_memory(bartap_text_t *text, const bartap_book_t *b
                                      char *text_buf, uint32_t text_cap, bartap_rolling_t *rolling,
                                      bartap_warn_fn warn_fn, void *warn_user)
 {
-    (void)text;
-    (void)book;
-    (void)spine_index;
-    (void)data;
-    (void)size;
-    (void)text_buf;
-    (void)text_cap;
-    (void)rolling;
-    (void)warn_fn;
-    (void)warn_user;
-    return BARTAP_ERR_UNSUPPORTED;
+    bartap_entry_t entry;
+
+    bartap_err_t err = text_init(text, book, spine_index, text_buf, text_cap, warn_fn, warn_user,
+                                 &entry);
+    if (err != BARTAP_OK) {
+        return err;
+    }
+    if (data == NULL && size != 0) {
+        text->status = BARTAP_ERR_ARG;
+        return text->status;
+    }
+    // the bytes are the caller's, already inflated and checked or not (R11, R31)
+    text->rolling = rolling;
+    bt_bytes_init_memory(&text->bytes, data, size, rolling);
+    bt_xml_init(&text->xml, &text->bytes, &text->warnings, spine_index);
+    return BARTAP_OK;
+}
+
+// One token handed on. Text is only marked here, it's read by bt_text_fill.
+static bartap_err_t text_token(bartap_text_t *text, const bartap_xml_token_t *token)
+{
+    switch (token->kind) {
+    case BARTAP_XML_TEXT:
+        text->in_text = 1;
+        text->stash_len = 0;
+        text->stash_pos = 0;
+        return BARTAP_OK;
+    case BARTAP_XML_START_TAG:
+        return bt_text_start_tag(text, token);
+    default:
+        return bt_text_end_tag(text, token);
+    }
+}
+
+// The next record, live or replayed. Failures aren't kept here, the callers decide.
+static bartap_err_t text_step(bartap_text_t *text, bartap_record_t *rec)
+{
+    for (;;) {
+        // what earlier tokens queued comes out before the next token is looked at (R20)
+        if (bt_text_emit_pending(text, rec)) {
+            return BARTAP_OK;
+        }
+        if (text->in_text) {
+            bartap_err_t err = bt_text_fill(text, rec);
+            if (err == BARTAP_OK) {
+                return BARTAP_OK;
+            }
+            if (err != BARTAP_END) {
+                // error reading text, pass error up
+                return err;
+            }
+            // the token's done
+            text->in_text = 0;
+        }
+        if (text->finished) {
+            // closing records are out, the item is done. END again on every call after
+            return BARTAP_END;
+        }
+        const bartap_xml_token_t *token;
+        bartap_err_t err = bt_xml_next(&text->xml, &token);
+        if (err == BARTAP_END) {
+            // the source ended and checked out (R31). close what's open, then END (R47 rule 4)
+            bt_text_finish(text);
+            text->finished = 1;
+            continue;
+        }
+        if (err == BARTAP_OK) {
+            err = text_token(text, token);
+        }
+        if (err != BARTAP_OK) {
+            // tokenizer or image lookup failed, pass error up
+            return err;
+        }
+        if (text->id_found == 1) {
+            // stop right at the element bartap_toc_resolve looks for, before anything moves on
+            text->id_found = 2;
+            return BARTAP_MORE;
+        }
+    }
 }
 
 bartap_err_t bartap_text_next(bartap_text_t *text, bartap_record_t *rec)
 {
-    (void)text;
-    (void)rec;
-    return BARTAP_ERR_UNSUPPORTED;
+    if (text == NULL || rec == NULL) {
+        return BARTAP_ERR_ARG;
+    }
+    if (text->status != BARTAP_OK) {
+        // failed before, open included. the same failure again
+        return text->status;
+    }
+    bartap_err_t err = text_step(text, rec);
+    if (err == BARTAP_OK || err == BARTAP_END) {
+        // delivered up to here, a replay stays quiet below it (R49)
+        if (text->xml.offset > text->high_water) {
+            text->high_water = text->xml.offset;
+        }
+        return err;
+    }
+    // keep it
+    text->status = err;
+    return err;
 }
 
 uint32_t bartap_text_warnings(const bartap_text_t *text)
 {
-    (void)text;
-    return 0;
+    return text != NULL ? text->warnings.bits : 0u;
 }
 
 /* ---- Seek (R12, R48, R49) ---- */
 
-bartap_err_t bartap_text_seek(bartap_text_t *text, const bartap_bookmark_t *bookmark)
+// Clears everything between tokens: queued records, a text token in progress, a failure.
+static void reset_flow(bartap_text_t *text)
 {
-    (void)text;
-    (void)bookmark;
-    return BARTAP_ERR_UNSUPPORTED;
+    text->emit_state = EMIT_NONE;
+    text->emit_next = EMIT_NONE;
+    text->emit_index = 0;
+    text->unwind_to = UNWIND_NONE;
+    text->in_text = 0;
+    text->finished = 0;
+    text->stash_len = 0;
+    text->stash_pos = 0;
+    text->cr_seen = 0;
+    text->status = BARTAP_OK;
+}
+
+// Back to the item's start with a fresh parse, as if just opened.
+static bartap_err_t restart(bartap_text_t *text)
+{
+    bartap_err_t err = bt_xml_seek(&text->xml, 0);
+    if (err != BARTAP_OK) {
+        // couldn't rewind the stream, pass error up
+        return err;
+    }
+    memset(&text->parse, 0, sizeof text->parse);
+    reset_flow(text);
+    return BARTAP_OK;
+}
+
+// Whether a checkpoint's bytes can be read again without the card (R48).
+static bool checkpoint_held(const bartap_text_t *text, const bartap_checkpoint_t *checkpoint)
+{
+    if (text->bytes.stream == NULL) {
+        // memory mode, every byte is in reach
+        return true;
+    }
+    return bt_ring_read(text->rolling, checkpoint->resume_offset, NULL, 0) == BARTAP_OK;
+}
+
+// Where a replay to block_offset starts: the live position if the block hasn't started yet, the
+// latest usable checkpoint at or before it, or the item's start (R48).
+static bartap_err_t replay_start(bartap_text_t *text, uint32_t block_offset)
+{
+    if (text->status == BARTAP_OK && !text->finished && block_offset > text->parse.block_offset) {
+        // still ahead, carry on from here. blocks start in offset order
+        return BARTAP_OK;
+    }
+    if (text->rolling != NULL) {
+        // newest first
+        for (uint32_t i = 2; i > 0; i--) {
+            const bartap_checkpoint_t *checkpoint = &text->rolling->checkpoints[i - 1u];
+            if (checkpoint->valid && checkpoint->block_offset <= block_offset &&
+                checkpoint_held(text, checkpoint)) {
+                return bt_checkpoint_restore(text, checkpoint);
+            }
+        }
+    }
+    // before both checkpoints, or none usable. replay from the start
+    return restart(text);
+}
+
+// Replay's quiet setting: records discarded, the warning callback silent below what has already
+// been delivered (R49).
+static void replay_begin(bartap_text_t *text)
+{
+    text->replaying = 1;
+    text->warnings.quiet_below = text->high_water;
+}
+
+static void replay_end(bartap_text_t *text)
+{
+    text->replaying = 0;
+    text->landing = 0;
+    text->warnings.quiet_below = 0;
 }
 
 bartap_err_t bt_text_replay(bartap_text_t *text, uint32_t block_offset, uint32_t char_offset)
 {
-    (void)text;
-    (void)block_offset;
-    (void)char_offset;
-    return BARTAP_ERR_UNSUPPORTED;
+    bartap_record_t rec;
+    bool in_block = false;
+
+    bartap_err_t err = replay_start(text, block_offset);
+    if (err != BARTAP_OK) {
+        // restore or rewind failed, pass error up
+        return err;
+    }
+    replay_begin(text);
+    for (;;) {
+        err = text_step(text, &rec);
+        if (err != BARTAP_OK) {
+            if (err == BARTAP_ERR_ARG && text->landing) {
+                // the offset falls inside a character (R12)
+                err = BARTAP_END;
+            }
+            // the item ended first, or a failure
+            break;
+        }
+        if (rec.kind == BARTAP_REC_BLOCK_START) {
+            if (in_block || rec.block.block_offset > block_offset) {
+                // the block ended before its character offset, or no block starts there
+                err = BARTAP_END;
+                break;
+            }
+            if (rec.block.block_offset == block_offset) {
+                in_block = true;
+                if (char_offset == 0) {
+                    // at the block start, before anything in it
+                    break;
+                }
+                // its text stops exactly at the character offset from here on
+                text->landing = 1;
+                text->target_char = char_offset;
+            }
+        } else if (in_block) {
+            if (rec.kind == BARTAP_REC_CONTAINER_START || rec.kind == BARTAP_REC_CONTAINER_END) {
+                // the block ended before its character offset
+                err = BARTAP_END;
+                break;
+            }
+            if (rec.kind == BARTAP_REC_TEXT && text->parse.char_offset == char_offset) {
+                // right after that many text bytes (R10). what's at this point comes out live
+                break;
+            }
+        }
+    }
+    if (err == BARTAP_OK && text->emit_next == EMIT_IMAGE) {
+        // landed on a block an image opened. the replay skipped its lookup, the tag is still current
+        err = resolve_image(text, &text->emit_next);
+    }
+    replay_end(text);
+    if (err != BARTAP_OK) {
+        return err;
+    }
+    // restate the context: containers, then the block with its character offset, then style (R49)
+    text->emit_state = EMIT_CONTEXT;
+    text->emit_index = 0;
+    return BARTAP_OK;
+}
+
+// R12 check 3's first pass: the last block start at or before offset. BARTAP_END if there's none.
+static bartap_err_t find_block(bartap_text_t *text, uint32_t offset, uint32_t *found)
+{
+    bartap_record_t rec;
+    bool have = false;
+
+    bartap_err_t err = replay_start(text, offset);
+    if (err != BARTAP_OK) {
+        return err;
+    }
+    replay_begin(text);
+    for (;;) {
+        err = text_step(text, &rec);
+        if (err != BARTAP_OK) {
+            // the item's end or a failure
+            break;
+        }
+        if (rec.kind == BARTAP_REC_BLOCK_START) {
+            if (rec.block.block_offset > offset) {
+                // past it, the last one seen is the one
+                break;
+            }
+            *found = rec.block.block_offset;
+            have = true;
+        }
+    }
+    replay_end(text);
+    if (err != BARTAP_OK && err != BARTAP_END) {
+        return err;
+    }
+    return have ? BARTAP_OK : BARTAP_END;
+}
+
+bartap_err_t bartap_text_seek(bartap_text_t *text, const bartap_bookmark_t *bookmark)
+{
+    bartap_err_t err;
+
+    if (text == NULL || bookmark == NULL) {
+        return BARTAP_ERR_ARG;
+    }
+    if (text->xml.bytes == NULL) {
+        // never opened, the open's failure again
+        return text->status != BARTAP_OK ? text->status : BARTAP_ERR_ARG;
+    }
+    if (bookmark->spine_index != text->spine_index) {
+        // a bookmark for another item, open that one instead
+        return BARTAP_ERR_ARG;
+    }
+    if (bookmark->chapter_crc32 != text->book->spine[text->spine_index].crc32) {
+        // check 2: the item changed, its start
+        err = BARTAP_END;
+    } else if (bookmark->version != BARTAP_BOOKMARK_VERSION) {
+        // check 3: character offsets mean something else now, but the block offset is still a
+        // raw position. the start of the block holding it
+        uint32_t block_offset = 0;
+        err = find_block(text, bookmark->block_offset, &block_offset);
+        if (err == BARTAP_OK) {
+            err = bt_text_replay(text, block_offset, 0);
+        }
+    } else {
+        // check 4: exact
+        err = bt_text_replay(text, bookmark->block_offset, bookmark->char_offset);
+    }
+    if (err == BARTAP_END) {
+        // not a landing, the item's start (R12, R29)
+        err = restart(text);
+    }
+    if (err != BARTAP_OK) {
+        // the source failed, keep it
+        text->status = err;
+    }
+    return err;
 }
 
 /* ---- Checkpoints (R48). The ring they index lives in xml.c ---- */
 
 void bt_checkpoint_take(bartap_text_t *text, uint32_t block_offset, uint32_t resume_offset)
 {
-    (void)text;
-    (void)block_offset;
-    (void)resume_offset;
+    bartap_rolling_t *rolling = text->rolling;
+
+    if (rolling == NULL || block_offset < rolling->next_checkpoint) {
+        // no ring, or not due yet: one per half ring
+        return;
+    }
+    // the older goes, the newer becomes the older
+    rolling->checkpoints[0] = rolling->checkpoints[1];
+    bartap_checkpoint_t *checkpoint = &rolling->checkpoints[1];
+    checkpoint->parse = text->parse;
+    checkpoint->block_offset = block_offset;
+    checkpoint->resume_offset = resume_offset;
+    checkpoint->valid = 1;
+    uint32_t half = rolling->size / 2u;
+    rolling->next_checkpoint = block_offset > UINT32_MAX - half ? UINT32_MAX : block_offset + half;
 }
 
 bartap_err_t bt_checkpoint_restore(bartap_text_t *text, const bartap_checkpoint_t *checkpoint)
 {
-    (void)text;
-    (void)checkpoint;
-    return BARTAP_ERR_UNSUPPORTED;
+    // only ever a held checkpoint, so this seek never rewinds and the snapshot stays good
+    bartap_err_t err = bt_xml_seek(&text->xml, checkpoint->resume_offset);
+    if (err != BARTAP_OK) {
+        // the source didn't move, pass error up
+        return err;
+    }
+    text->parse = checkpoint->parse;
+    reset_flow(text);
+    if (checkpoint->block_offset != checkpoint->resume_offset) {
+        // past an explicit block's tag, its start record is still owed. a block with no tag
+        // resumes before the token that opens it, which opens it again (R48 invariant 2)
+        text->emit_state = EMIT_BLOCK_START;
+    }
+    return BARTAP_OK;
 }
 
 /* ---- Bookmarks (R12, R19) ---- */
 
+// Field offsets, frozen: a bookmark of any version can be read (R12).
+#define BM_VERSION 0u
+#define BM_BOOK_HASH 1u
+#define BM_SPINE 5u
+#define BM_BLOCK 7u
+#define BM_CHAR 11u
+#define BM_CHAPTER_CRC 15u
+#define BM_CRC 19u
+
+_Static_assert(BM_CRC + 4u == BARTAP_BOOKMARK_SIZE, "the bookmark CRC-32 ends the bookmark");
+
 bartap_err_t bartap_bookmark_write(const bartap_book_t *book, uint16_t spine_index,
                                    uint32_t block_offset, uint32_t char_offset, uint8_t *out)
 {
-    (void)book;
-    (void)spine_index;
-    (void)block_offset;
-    (void)char_offset;
-    (void)out;
-    return BARTAP_ERR_UNSUPPORTED;
+    if (book == NULL || out == NULL || spine_index >= book->spine_count) {
+        // no such item in this book
+        return BARTAP_ERR_ARG;
+    }
+    // byte by byte, little-endian, never a struct dump (R19)
+    out[BM_VERSION] = (uint8_t)BARTAP_BOOKMARK_VERSION;
+    bt_put_le32(out + BM_BOOK_HASH, book->book_hash);
+    bt_put_le16(out + BM_SPINE, spine_index);
+    bt_put_le32(out + BM_BLOCK, block_offset);
+    bt_put_le32(out + BM_CHAR, char_offset);
+    // from the directory, so a changed chapter is caught without reading it (R12 check 2)
+    bt_put_le32(out + BM_CHAPTER_CRC, book->spine[spine_index].crc32);
+    bt_put_le32(out + BM_CRC, bt_crc32(0, out, BM_CRC));
+    return BARTAP_OK;
 }
 
 bartap_err_t bartap_bookmark_read(const bartap_book_t *book, const uint8_t *in,
                                   bartap_bookmark_t *out)
 {
-    (void)book;
-    (void)in;
-    (void)out;
-    return BARTAP_ERR_UNSUPPORTED;
+    if (book == NULL || in == NULL || out == NULL) {
+        return BARTAP_ERR_ARG;
+    }
+    if (bt_get_le32(in + BM_CRC) != bt_crc32(0, in, BM_CRC)) {
+        // check 0: no field can be trusted, not even the spine index
+        return BARTAP_ERR_CORRUPT;
+    }
+    out->version = in[BM_VERSION];
+    out->book_hash = bt_get_le32(in + BM_BOOK_HASH);
+    out->spine_index = bt_get_le16(in + BM_SPINE);
+    out->block_offset = bt_get_le32(in + BM_BLOCK);
+    out->char_offset = bt_get_le32(in + BM_CHAR);
+    out->chapter_crc32 = bt_get_le32(in + BM_CHAPTER_CRC);
+    if (out->book_hash != book->book_hash) {
+        // check 1: another book's. the caller decides what to open
+        return BARTAP_ERR_WRONG_BOOK;
+    }
+    if (out->spine_index >= book->spine_count) {
+        // no chapter to land in, spine truncation included (R41)
+        return BARTAP_ERR_CORRUPT;
+    }
+    // checks 2 to 4 are bartap_text_seek's, once the item is open
+    return BARTAP_OK;
 }
 
 /* ---- TOC (R13, R26) ---- */
+
+enum { TOC_SEARCH = 0, TOC_LIST, TOC_LABEL, TOC_DONE };
+enum { TOC_EMIT_NONE = 0, TOC_EMIT_STYLE, TOC_EMIT_REREAD };
+
+#define TOC_NO_LABEL 0xFFFFFFFFu
+#define TOC_DEPTH_MAX 0xFFFFu
+
+// Compares a folded tag name with a lower-case literal.
+static bool name_is(const bartap_xml_token_t *token, const char *name, uint32_t len)
+{
+    return token->name_len == len && memcmp(token->name, name, len) == 0;
+}
+
+#define NAME_IS(token, name) name_is(token, name, sizeof name - 1u)
+
+static void toc_warn(bartap_toc_t *toc, bartap_warning_t code, uint32_t offset)
+{
+    bt_warn(&toc->warnings, code, BARTAP_NO_SPINE, offset);
+}
+
+static int hex_value(char c)
+{
+    if (c >= '0' && c <= '9') {
+        return c - '0';
+    }
+    c = (char)(c | 0x20);
+    return c >= 'a' && c <= 'f' ? c - 'a' + 10 : -1;
+}
+
+// Percent-decodes a fragment where it lies, in the tokenizer's attribute storage, so it matches the
+// id it names (R26 keeps it there, needing no memory of its own). Returns the decoded length.
+static uint32_t decode_fragment(char *p, uint32_t len)
+{
+    uint32_t out = 0;
+    for (uint32_t i = 0; i < len; i++) {
+        int hi;
+        int lo;
+        if (p[i] == '%' && len - i > 2u && (hi = hex_value(p[i + 1u])) >= 0 &&
+            (lo = hex_value(p[i + 2u])) >= 0) {
+            p[out++] = (char)(hi * 16 + lo);
+            i += 2u;
+        } else {
+            // not an escape, kept as it is
+            p[out++] = p[i];
+        }
+    }
+    return out;
+}
+
+// Fills a TOC-entry record for an href: spine index of its document, and its fragment. An href that
+// leads nowhere in the spine still gives an entry, with BARTAP_NO_SPINE and a warning (R26).
+static void toc_entry(bartap_toc_t *toc, const char *href, uint32_t href_len, uint32_t offset,
+                      bartap_record_t *rec)
+{
+    const bartap_book_t *book = toc->book;
+    char path[BARTAP_PATH_MAX];
+    uint16_t path_len;
+
+    rec->kind = BARTAP_REC_TOC_ENTRY;
+    rec->toc.depth = (uint16_t)(toc->depth > 0 ? toc->depth - 1u : 0u);
+    rec->toc.spine_index = BARTAP_NO_SPINE;
+    rec->toc.fragment = NULL;
+    rec->toc.fragment_len = 0;
+    if (href == NULL) {
+        // a heading with no link, an entry with no target and nothing wrong
+        return;
+    }
+    for (uint32_t i = 0; i < href_len; i++) {
+        if (href[i] == '#') {
+            // the fragment, decoded in the storage the tokenizer gave us. ours, it's toc->xml's
+            char *fragment = toc->xml.attr_storage + (href + i + 1u - toc->xml.attr_storage);
+            uint32_t fragment_len = decode_fragment(fragment, href_len - i - 1u);
+            if (fragment_len != 0) {
+                rec->toc.fragment = fragment;
+                rec->toc.fragment_len = fragment_len;
+            }
+            break;
+        }
+    }
+    // the resolver drops the fragment itself, and refuses remote and data: hrefs
+    if (bt_href_resolve(toc->base_dir, toc->base_dir_len, href, href_len, path, sizeof path,
+                        &path_len) == BARTAP_OK) {
+        uint32_t hash = bt_name_hash(BT_NAME_HASH_INIT, path, path_len);
+        for (uint16_t i = 0; i < book->spine_count; i++) {
+            // first in spine order, the way the reader meets it
+            if (book->spine[i].path_hash == hash && book->spine[i].path_len == path_len) {
+                rec->toc.spine_index = i;
+                return;
+            }
+        }
+    }
+    // not in the spine, or not a path at all
+    rec->toc.fragment = NULL;
+    rec->toc.fragment_len = 0;
+    toc_warn(toc, BARTAP_WARN_TOC_TARGET, offset);
+}
+
+// A label's elements change style as they would in text (R26), counted per bit since a label has no
+// frames to restore from.
+static void toc_style(bartap_toc_t *toc, const bartap_xml_token_t *token, bool open)
+{
+    uint32_t bit;
+    if (!bt_tag_is_inline(bt_tag_lookup(token->name, token->name_len), &bit) || token->self_closing) {
+        return;
+    }
+    uint32_t index = 0;
+    while ((bit >> (index + 1u)) != 0) {
+        index++;
+    }
+    if (open && toc->style_count[index] < UINT8_MAX) {
+        toc->style_count[index]++;
+    } else if (!open && toc->style_count[index] != 0) {
+        toc->style_count[index]--;
+    }
+    toc->style = 0;
+    for (uint32_t i = 0; i < sizeof toc->style_count; i++) {
+        if (toc->style_count[i] != 0) {
+            toc->style |= 1u << i;
+        }
+    }
+}
+
+// The label starts: style restated before its text, which collapses as text does (R4, R26).
+static void begin_label(bartap_toc_t *toc, uint8_t label_tag)
+{
+    toc->mode = TOC_LABEL;
+    toc->label_tag = label_tag;
+    toc->label_nest = 1;
+    toc->space_pending = 0;
+    toc->space_allowed = 0;
+    memset(toc->style_count, 0, sizeof toc->style_count);
+    toc->style = 0;
+    toc->emit_state = TOC_EMIT_STYLE;
+}
+
+static void end_label(bartap_toc_t *toc)
+{
+    // a space at a label's end goes, as at a block's end
+    toc->mode = TOC_LIST;
+    toc->space_pending = 0;
+}
+
+enum { LABEL_A = 1, LABEL_SPAN, LABEL_NAVLABEL };
+
+// nav: lists of li, each with an a (or a span heading) for its label, then perhaps a nested list.
+// true with a record if the tag starts an entry.
+static bool nav_start(bartap_toc_t *toc, const bartap_xml_token_t *token, bartap_record_t *rec)
+{
+    if (NAME_IS(token, "nav") && !token->self_closing && toc->nav_nest < UINT16_MAX) {
+        // a nav inside the toc nav, counted so its close doesn't end ours
+        toc->nav_nest++;
+        return false;
+    }
+    if (toc->mode == TOC_LABEL) {
+        if ((toc->label_tag == LABEL_A && NAME_IS(token, "a")) ||
+            (toc->label_tag == LABEL_SPAN && NAME_IS(token, "span"))) {
+            if (!token->self_closing && toc->label_nest < UINT16_MAX) {
+                toc->label_nest++;
+            }
+            return false;
+        }
+        if (!NAME_IS(token, "ol") && !NAME_IS(token, "li")) {
+            // markup inside the label
+            if (NAME_IS(token, "br")) {
+                toc->space_pending = toc->space_allowed;
+            }
+            toc_style(toc, token, true);
+            return false;
+        }
+        // a list inside an unclosed label, the label ends here
+        end_label(toc);
+    }
+    if (NAME_IS(token, "ol")) {
+        if (!token->self_closing && toc->depth < TOC_DEPTH_MAX) {
+            toc->depth++;
+        }
+        return false;
+    }
+    if (NAME_IS(token, "li")) {
+        toc->has_entry = 0;
+        return false;
+    }
+    bool is_a = NAME_IS(token, "a");
+    if ((!is_a && !NAME_IS(token, "span")) || toc->has_entry || toc->depth == 0) {
+        // outside an item's label, nothing to return
+        return false;
+    }
+    // the item's first a or span is its entry
+    const char *href = NULL;
+    uint32_t href_len = 0;
+    if (is_a) {
+        (void)bt_xml_attr(&toc->xml, "href", sizeof "href" - 1u, &href, &href_len);
+    }
+    toc_entry(toc, href, href_len, token->offset, rec);
+    toc->has_entry = 1;
+    if (!token->self_closing) {
+        begin_label(toc, is_a ? LABEL_A : LABEL_SPAN);
+    }
+    return true;
+}
+
+static void nav_end(bartap_toc_t *toc, const bartap_xml_token_t *token)
+{
+    if (NAME_IS(token, "nav")) {
+        if (--toc->nav_nest == 0) {
+            // the toc nav is over, the TOC with it
+            toc->mode = TOC_DONE;
+        }
+        return;
+    }
+    if (toc->mode == TOC_LABEL) {
+        if ((toc->label_tag == LABEL_A && NAME_IS(token, "a")) ||
+            (toc->label_tag == LABEL_SPAN && NAME_IS(token, "span"))) {
+            if (--toc->label_nest == 0) {
+                end_label(toc);
+            }
+            return;
+        }
+        if (!NAME_IS(token, "ol") && !NAME_IS(token, "li")) {
+            toc_style(toc, token, false);
+            return;
+        }
+        // the item or list closed with the label still open
+        end_label(toc);
+    }
+    if (NAME_IS(token, "ol") && toc->depth > 0) {
+        toc->depth--;
+    }
+}
+
+// NCX: navPoints nest; each has a navLabel, normally before its content (R26).
+static bool ncx_start(bartap_toc_t *toc, const bartap_xml_token_t *token, bartap_record_t *rec)
+{
+    if (toc->mode == TOC_LABEL) {
+        // labels hold text, and sometimes an img, nothing that matters here
+        return false;
+    }
+    if (NAME_IS(token, "navpoint")) {
+        if (toc->depth > 0 && !toc->has_entry) {
+            // the enclosing navPoint never had a content, so it has no entry
+            toc_warn(toc, BARTAP_WARN_TOC_TARGET, token->offset);
+        }
+        if (!token->self_closing && toc->depth < TOC_DEPTH_MAX) {
+            toc->depth++;
+        }
+        toc->has_entry = 0;
+        toc->label_offset = TOC_NO_LABEL;
+        return false;
+    }
+    if (toc->depth == 0) {
+        return false;
+    }
+    if (NAME_IS(token, "navlabel") && !token->self_closing) {
+        if (toc->has_entry) {
+            // its content came first, or this is the re-read: the label now
+            begin_label(toc, LABEL_NAVLABEL);
+        } else if (toc->label_offset == TOC_NO_LABEL) {
+            // before its content, the usual order. come back to it once the entry is out
+            toc->label_offset = token->offset;
+        }
+        return false;
+    }
+    if (!NAME_IS(token, "content") || toc->has_entry) {
+        // a content already returned is the re-read passing it again
+        return false;
+    }
+    const char *src = NULL;
+    uint32_t src_len = 0;
+    if (!bt_xml_attr(&toc->xml, "src", sizeof "src" - 1u, &src, &src_len)) {
+        // nowhere to point, but still an entry
+        toc_warn(toc, BARTAP_WARN_TOC_TARGET, token->offset);
+    }
+    toc_entry(toc, src, src_len, token->offset, rec);
+    toc->has_entry = 1;
+    if (toc->label_offset != TOC_NO_LABEL) {
+        // back for the label on the next call, once the fragment has been used
+        toc->emit_state = TOC_EMIT_REREAD;
+    }
+    return true;
+}
+
+static void ncx_end(bartap_toc_t *toc, const bartap_xml_token_t *token)
+{
+    if (toc->mode == TOC_LABEL) {
+        if (NAME_IS(token, "navlabel")) {
+            end_label(toc);
+        }
+        return;
+    }
+    if (NAME_IS(token, "navpoint") && toc->depth > 0) {
+        if (!toc->has_entry) {
+            // no content in it, no entry
+            toc_warn(toc, BARTAP_WARN_TOC_TARGET, token->offset);
+        }
+        toc->depth--;
+        // the enclosing navPoint's entry came before its children
+        toc->has_entry = 1;
+        toc->label_offset = TOC_NO_LABEL;
+    } else if (NAME_IS(token, "navmap")) {
+        toc->mode = TOC_DONE;
+    }
+}
 
 bartap_err_t bartap_toc_open(bartap_toc_t *toc, const bartap_book_t *book, uint8_t *window,
                              char *text_buf, uint32_t text_cap, bartap_warn_fn warn_fn,
                              void *warn_user)
 {
-    (void)toc;
-    (void)book;
-    (void)window;
-    (void)text_buf;
-    (void)text_cap;
-    (void)warn_fn;
-    (void)warn_user;
-    return BARTAP_ERR_UNSUPPORTED;
+    bartap_entry_t entry;
+
+    if (toc == NULL) {
+        return BARTAP_ERR_ARG;
+    }
+    memset(toc, 0, sizeof *toc);
+    toc->book = book;
+    toc->text_buf = text_buf;
+    toc->text_cap = text_cap;
+    toc->warnings.fn = warn_fn;
+    toc->warnings.user = warn_user;
+    toc->label_offset = TOC_NO_LABEL;
+    toc->mode = TOC_DONE;
+
+    if (book == NULL || window == NULL || text_buf == NULL) {
+        toc->status = BARTAP_ERR_ARG;
+        return toc->status;
+    }
+    if (text_cap < BARTAP_TEXT_MIN) {
+        toc->status = BARTAP_ERR_BUFFER_TOO_SMALL;
+        return toc->status;
+    }
+    // EPUB 3's nav first, the NCX for EPUB 2
+    uint32_t dir_offset = book->nav_dir_offset;
+    toc->is_ncx = dir_offset == BARTAP_NO_DIR_OFFSET;
+    if (toc->is_ncx) {
+        dir_offset = book->ncx_dir_offset;
+    }
+    if (dir_offset == BARTAP_NO_DIR_OFFSET) {
+        // neither, an empty TOC: END now and on every next
+        return BARTAP_END;
+    }
+    bartap_err_t err = bt_dir_entry(&book->directory, dir_offset, &entry);
+    if (err == BARTAP_OK) {
+        // its path, for resolving hrefs. it matched a resolved href at open, so it fits
+        uint16_t len;
+        err = bt_dir_name(&book->directory, dir_offset, toc->base_dir, BARTAP_PATH_MAX, &len);
+        toc->base_dir_len = len;
+    }
+    if (err == BARTAP_OK) {
+        err = bt_stream_open(&toc->stream, book->source, &entry, window);
+    }
+    if (err != BARTAP_OK) {
+        // card failure or a damaged entry, keep it
+        toc->status = err == BARTAP_ERR_BUFFER_TOO_SMALL ? BARTAP_ERR_CORRUPT : err;
+        return toc->status;
+    }
+    // no ring: the NCX re-read needs only the inflate window (R26)
+    bt_bytes_init_stream(&toc->bytes, &toc->stream, NULL);
+    bt_xml_init(&toc->xml, &toc->bytes, &toc->warnings, BARTAP_NO_SPINE);
+    toc->mode = TOC_SEARCH;
+    return BARTAP_OK;
+}
+
+// A label's next text record, collapsed as text is (R4). BARTAP_END when the token has no more.
+static bartap_err_t toc_fill(bartap_toc_t *toc, bartap_record_t *rec)
+{
+    char *buf = toc->text_buf;
+    uint32_t n = 0;
+
+    for (;;) {
+        if (toc->stash_pos == toc->stash_len) {
+            uint32_t got;
+            bartap_err_t err = bt_xml_text(&toc->xml, toc->stash, sizeof toc->stash, &got);
+            if (err != BARTAP_OK) {
+                // error reading text, pass error up
+                return err;
+            }
+            if (got == 0) {
+                // the token's end
+                break;
+            }
+            toc->stash_len = (uint8_t)got;
+            toc->stash_pos = 0;
+        }
+        char c = toc->stash[toc->stash_pos];
+        if (is_space(c)) {
+            // only between words, never leading
+            toc->stash_pos++;
+            toc->space_pending = toc->space_allowed;
+            continue;
+        }
+        if (n == 0 && toc->style != toc->style_out) {
+            // a style change goes before the text it applies to
+            rec->kind = BARTAP_REC_STYLE;
+            rec->style.bits = toc->style;
+            toc->style_out = toc->style;
+            return BARTAP_OK;
+        }
+        uint32_t len = char_len((uint8_t)c);
+        if (toc->space_pending + len > toc->text_cap - n) {
+            if (n == 0) {
+                // a 4-byte character and its space can't share a minimum buffer, the space goes alone
+                toc->space_pending = 0;
+                buf[n++] = ' ';
+            }
+            break;
+        }
+        if (toc->space_pending) {
+            buf[n++] = ' ';
+            toc->space_pending = 0;
+        }
+        memcpy(buf + n, toc->stash + toc->stash_pos, len);
+        n += len;
+        toc->stash_pos = (uint8_t)(toc->stash_pos + len);
+        toc->space_allowed = 1;
+    }
+    if (n == 0) {
+        return BARTAP_END;
+    }
+    rec->kind = BARTAP_REC_TEXT;
+    rec->text.ptr = buf;
+    rec->text.len = n;
+    return BARTAP_OK;
+}
+
+// One step of the TOC, without the sticky failure.
+static bartap_err_t toc_step(bartap_toc_t *toc, bartap_record_t *rec)
+{
+    for (;;) {
+        if (toc->emit_state == TOC_EMIT_STYLE) {
+            // a label starts with its style (R26), as a block does (R8)
+            toc->emit_state = TOC_EMIT_NONE;
+            rec->kind = BARTAP_REC_STYLE;
+            rec->style.bits = toc->style;
+            toc->style_out = toc->style;
+            return BARTAP_OK;
+        }
+        if (toc->emit_state == TOC_EMIT_REREAD) {
+            // back to the navLabel. from the inflate window if it's within 32 KiB, else the entry
+            // rewinds (R26). once per navPoint: the entry is out, so the label is read this time.
+            // warnings already raised there stay quiet
+            toc->emit_state = TOC_EMIT_NONE;
+            if (toc->xml.offset > toc->warnings.quiet_below) {
+                toc->warnings.quiet_below = toc->xml.offset;
+            }
+            uint32_t offset = toc->label_offset;
+            toc->label_offset = TOC_NO_LABEL;
+            toc->in_text = 0;
+            bartap_err_t err = bt_xml_seek(&toc->xml, offset);
+            if (err != BARTAP_OK) {
+                return err;
+            }
+            continue;
+        }
+        if (toc->in_text) {
+            bartap_err_t err = toc_fill(toc, rec);
+            if (err != BARTAP_END) {
+                return err;
+            }
+            toc->in_text = 0;
+        }
+        if (toc->mode == TOC_DONE) {
+            return BARTAP_END;
+        }
+        const bartap_xml_token_t *token;
+        bartap_err_t err = bt_xml_next(&toc->xml, &token);
+        if (err == BARTAP_END) {
+            // the document ended, the list with it
+            toc->mode = TOC_DONE;
+            return BARTAP_END;
+        }
+        if (err != BARTAP_OK) {
+            return err;
+        }
+        if (token->kind == BARTAP_XML_TEXT) {
+            // only a label's text is output, the tokenizer runs the rest out
+            toc->in_text = toc->mode == TOC_LABEL;
+            toc->stash_len = 0;
+            toc->stash_pos = 0;
+            continue;
+        }
+        bool start = token->kind == BARTAP_XML_START_TAG;
+        if (toc->mode == TOC_SEARCH) {
+            const char *type;
+            uint32_t type_len;
+            if (!toc->is_ncx && start && NAME_IS(token, "nav") && !token->self_closing &&
+                bt_xml_attr(&toc->xml, "epub:type", sizeof "epub:type" - 1u, &type, &type_len) &&
+                bt_has_token(type, type_len, "toc", sizeof "toc" - 1u)) {
+                // the toc nav, landmarks and page-list are others (R26)
+                toc->mode = TOC_LIST;
+                toc->nav_nest = 1;
+            } else if (toc->is_ncx && start && NAME_IS(token, "navmap") && !token->self_closing) {
+                toc->mode = TOC_LIST;
+            }
+            continue;
+        }
+        if (start) {
+            bool entry = toc->is_ncx ? ncx_start(toc, token, rec) : nav_start(toc, token, rec);
+            if (entry) {
+                return BARTAP_OK;
+            }
+        } else if (toc->is_ncx) {
+            ncx_end(toc, token);
+        } else {
+            nav_end(toc, token);
+        }
+    }
 }
 
 bartap_err_t bartap_toc_next(bartap_toc_t *toc, bartap_record_t *rec)
 {
-    (void)toc;
-    (void)rec;
-    return BARTAP_ERR_UNSUPPORTED;
+    if (toc == NULL || rec == NULL) {
+        return BARTAP_ERR_ARG;
+    }
+    if (toc->status != BARTAP_OK) {
+        // failed before, open included
+        return toc->status;
+    }
+    bartap_err_t err = toc_step(toc, rec);
+    if (err != BARTAP_OK && err != BARTAP_END) {
+        // keep it
+        toc->status = err;
+    }
+    return err;
 }
 
 bartap_err_t bartap_toc_resolve(bartap_text_t *text, const char *id, uint32_t id_len,
                                 bartap_bookmark_t *out)
 {
-    (void)text;
-    (void)id;
-    (void)id_len;
-    (void)out;
-    return BARTAP_ERR_UNSUPPORTED;
+    bartap_record_t rec;
+    bool found = false;
+
+    if (text == NULL || id == NULL || id_len == 0 || out == NULL) {
+        return BARTAP_ERR_ARG;
+    }
+    if (text->xml.bytes == NULL) {
+        // never opened
+        return text->status != BARTAP_OK ? text->status : BARTAP_ERR_ARG;
+    }
+    out->version = (uint8_t)BARTAP_BOOKMARK_VERSION;
+    out->book_hash = text->book->book_hash;
+    out->spine_index = text->spine_index;
+    out->chapter_crc32 = text->book->spine[text->spine_index].crc32;
+    out->block_offset = 0;
+    out->char_offset = 0;
+
+    // from the start, quietly, records discarded (R13, R49)
+    bartap_err_t err = restart(text);
+    if (err != BARTAP_OK) {
+        text->status = err;
+        return err;
+    }
+    text->find_id = id;
+    text->find_id_len = id_len;
+    text->id_found = 0;
+    replay_begin(text);
+    for (;;) {
+        err = text_step(text, &rec);
+        if (err == BARTAP_MORE) {
+            // just past the element's start tag
+            found = true;
+            if (text->parse.block_live) {
+                // inside a block, or starting one: here in its text (R10)
+                out->block_offset = text->parse.block_offset;
+                out->char_offset = text->parse.char_offset;
+                err = BARTAP_OK;
+                break;
+            }
+            // between blocks, the next block holds where it starts
+            continue;
+        }
+        if (err != BARTAP_OK) {
+            break;
+        }
+        if (found && rec.kind == BARTAP_REC_BLOCK_START) {
+            out->block_offset = rec.block.block_offset;
+            out->char_offset = 0;
+            break;
+        }
+    }
+    replay_end(text);
+    text->find_id = NULL;
+    text->find_id_len = 0;
+    text->id_found = 0;
+    if (err == BARTAP_END && found) {
+        // nothing after it: the end of the last block
+        out->block_offset = text->parse.block_offset;
+        out->char_offset = text->parse.char_offset;
+        err = BARTAP_OK;
+    } else if (err == BARTAP_END) {
+        // a broken link, the chapter start (R13)
+        text_warn(text, BARTAP_WARN_BROKEN_LINK, 0);
+        err = BARTAP_OK;
+    }
+    if (err == BARTAP_OK) {
+        // the caller seeks next, from the start like anyone else
+        err = restart(text);
+    }
+    if (err != BARTAP_OK) {
+        text->status = err;
+    }
+    return err;
 }
 
 uint32_t bartap_toc_warnings(const bartap_toc_t *toc)
 {
-    (void)toc;
-    return 0;
+    return toc != NULL ? toc->warnings.bits : 0u;
 }

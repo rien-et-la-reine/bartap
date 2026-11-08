@@ -77,3 +77,43 @@ bool canon_record(const bartap_record_t *rec, canon_sink_fn sink, void *user)
     }
     return true;
 }
+
+bool canon_stream_record(canon_stream_t *s, const bartap_record_t *rec)
+{
+    static const uint8_t text_start = 0x04;
+    if (rec->kind == BARTAP_REC_TEXT) {
+        if (rec->text.ptr == NULL && rec->text.len != 0) {
+            return false;
+        }
+        if (!s->in_text) {
+            /* a run starts; its length is never written, its end is */
+            s->sink(s->user, &text_start, 1);
+            s->in_text = true;
+        }
+        if (rec->text.len != 0) {
+            s->sink(s->user, (const uint8_t *)rec->text.ptr, rec->text.len);
+        }
+        return true;
+    }
+    canon_stream_end(s);
+    return canon_record(rec, s->sink, s->user);
+}
+
+void canon_stream_end(canon_stream_t *s)
+{
+    static const uint8_t text_end = 0x00;
+    if (s->in_text) {
+        s->sink(s->user, &text_end, 1);
+        s->in_text = false;
+    }
+}
+
+void canon_hash_sink(void *user, const uint8_t *data, size_t len)
+{
+    uint64_t *h = user;
+    uint64_t v = *h;
+    for (size_t i = 0; i < len; i++) {
+        v = (v ^ data[i]) * 0x100000001B3ull;
+    }
+    *h = v;
+}
