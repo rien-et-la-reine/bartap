@@ -668,8 +668,13 @@ bartap_err_t bartap_toc_open(bartap_toc_t *toc, const bartap_book_t *book, uint8
 /* BARTAP_OK with a record, or BARTAP_END. A record's fragment is valid until the next call. */
 bartap_err_t bartap_toc_next(bartap_toc_t *toc, bartap_record_t *rec);
 
-/* Streams an opened text object from its start to the element with this id, and fills out for
- * bartap_text_seek. An id not found gives the chapter start, with a warning (R13). */
+/* Follows a TOC entry's fragment: streams an opened text object from its start to the element with
+ * this id and lands there, in one pass. The next records are as R49 describes, as after
+ * bartap_text_seek: no seek is needed. out is filled with the landing as a bookmark, for
+ * bartap_bookmark_write's block and character offsets or a later bartap_text_seek. It names the same
+ * place in the text; a seek to it lands just after that text, so before a line break or image that
+ * sits between the text and the element. An id not found lands at the chapter start, with a warning
+ * (R13). */
 bartap_err_t bartap_toc_resolve(bartap_text_t *text, const char *id, uint32_t id_len,
                                 bartap_bookmark_t *out);
 

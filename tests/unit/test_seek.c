@@ -379,7 +379,19 @@ static void expect_resolve(const char *id, uint32_t block, uint32_t chr)
     CHECK(bm.version == BARTAP_BOOKMARK_VERSION && bm.book_hash == tx_book.book_hash);
     CHECK(bm.spine_index == 0 && bm.chapter_crc32 == tx_spine[0].crc32);
 
-    /* and seeking there lands on it */
+    /* it has landed there already: the records are the ones a seek to the bookmark gives */
+    tx_dump_begin(&dump, 0, TX_OFFSETS);
+    CHECK(tx_dump_text(&dump, &tx_text, 64) == BARTAP_END);
+    open_mode(MODE_MEMORY, 64);
+    CHECK(bartap_text_seek(&tx_text, &bm) == BARTAP_OK);
+    tx_dump_begin(&fresh, 0, TX_OFFSETS);
+    CHECK(tx_dump_text(&fresh, &tx_text, 64) == BARTAP_END);
+    if (strcmp(dump.s, fresh.s) != 0) {
+        printf("resolve %s lands on:\n%s\na seek to its bookmark on:\n%s\n", id, dump.s, fresh.s);
+        check_failures++;
+    }
+
+    /* and seeking there from where it landed works too */
     bartap_record_t r;
     CHECK(bartap_text_seek(&tx_text, &bm) == BARTAP_OK);
     bartap_err_t err;
@@ -415,14 +427,73 @@ static void test_resolve(void)
     /* nothing after it: the end of the last block */
     expect_resolve("tail", last, 3);
 
-    /* not there: the chapter start, with a warning */
+    /* not there: the chapter start, with a warning, and a fresh read's records */
     bartap_bookmark_t bm;
     open_mode(MODE_MEMORY, 64);
     CHECK(bartap_toc_resolve(&tx_text, "nope", 4, &bm) == BARTAP_OK);
     CHECK(bm.block_offset == 0 && bm.char_offset == 0);
     CHECK(bartap_text_warnings(&tx_text) & BARTAP_WARN_BROKEN_LINK);
+    tx_dump_begin(&dump, 0, TX_OFFSETS);
+    CHECK(tx_dump_text(&dump, &tx_text, 64) == BARTAP_END);
+    open_mode(MODE_MEMORY, 64);
+    tx_dump_begin(&fresh, 0, TX_OFFSETS);
+    CHECK(tx_dump_text(&fresh, &tx_text, 64) == BARTAP_END);
+    CHECK(strcmp(dump.s, fresh.s) == 0);
+    open_mode(MODE_MEMORY, 64);
     /* case matters for ids */
     CHECK(bartap_toc_resolve(&tx_text, "TOP", 3, &bm) == BARTAP_OK && bm.block_offset == 0);
+
+    /* The landing is at the element. Its bookmark counts text only (R10), so a seek to it stops
+     * right after the text before the element: a break or image in between comes out again. An
+     * element that is itself a break, an image or a block start lands on that record, in every
+     * mode. */
+    const char *marks = tx_doc(
+        &doc, "<ul><li><p>ab<br/><b id=\"past\">cd</b><br id=\"br\"/>ef</p></li></ul>"
+              "<div id=\"gap\"></div><br id=\"lone\"/>gh<p>x<i id=\"empty\"/>y</p><p id=\"self\"/><hr id=\"rule\"/>z");
+    tx_build(&marks, 1, NULL, NULL, true);
+    use_chapter(marks);
+    static const struct {
+        const char *id;
+        const char *first; /* the kinds of the first records after the context's containers */
+    } want[] = {
+        {"past", "BST"},  /* block start, style, then the bold text: no break before it */
+        {"br", "BSL"},    /* the break itself */
+        {"gap", "BSL"},   /* between blocks: the block the lone break opens */
+        {"lone", "BSL"},
+        {"empty", "BST"},
+        {"self", "BSB"},  /* an empty block, then the hr's */
+        {"rule", "BSB"},
+    };
+    for (size_t k = 0; k < sizeof want / sizeof want[0]; k++) {
+        for (int mode = 0; mode < MODE_COUNT; mode++) {
+            bartap_record_t r;
+            char kinds[4] = "";
+            ring_size = 512;
+            open_mode(mode, 64);
+            CHECK(bartap_toc_resolve(&tx_text, want[k].id, (uint32_t)strlen(want[k].id), &bm) == BARTAP_OK);
+            CHECK((bartap_text_warnings(&tx_text) & BARTAP_WARN_BROKEN_LINK) == 0);
+            bartap_err_t err;
+            while ((err = bartap_text_next(&tx_text, &r)) == BARTAP_OK && r.kind == BARTAP_REC_CONTAINER_START) {
+            }
+            for (int n = 0; n < 3 && err == BARTAP_OK; n++) {
+                kinds[n] = r.kind == BARTAP_REC_BLOCK_START ? 'B' : r.kind == BARTAP_REC_STYLE ? 'S'
+                         : r.kind == BARTAP_REC_TEXT ? 'T' : r.kind == BARTAP_REC_LINE_BREAK ? 'L' : '?';
+                if (n == 0) {
+                    CHECK(r.kind == BARTAP_REC_BLOCK_START && r.block.block_offset == bm.block_offset &&
+                          r.block.char_offset == bm.char_offset);
+                }
+                err = bartap_text_next(&tx_text, &r);
+            }
+            if (strcmp(kinds, want[k].first) != 0) {
+                printf("resolve %s mode %d: want %s, got %s\n", want[k].id, mode, want[k].first, kinds);
+                check_failures++;
+            }
+            while (err == BARTAP_OK) {
+                err = bartap_text_next(&tx_text, &r);
+            }
+            CHECK(err == BARTAP_END);
+        }
+    }
 
     /* an id inside head isn't a place in the text */
     const char *raw = "<html><head><title id=\"hd\">t</title></head><body><p>a</p></body></html>";

@@ -141,8 +141,12 @@ Character offsets in bookmarks count the bytes of text records only, never other
 - A TOC target (`chapter.xhtml#id`) is resolved when it is followed, by streaming that chapter from
   its start until the element with that `id` is reached.
 - The result is an exact landing in bookmark form (R12): the block offset of the block containing the
-  element, plus the character offset of the element within that block's text. Following a TOC entry
-  then uses the same seek as a bookmark.
+  element, plus the character offset of the element within that block's text.
+- Resolving also lands the text object there, in the same pass, with R49's records next: the scan
+  has already stopped at the element, so a seek afterwards would only read the chapter's start a
+  second time. The bookmark is for saving the position. A seek to it gives the same landing, except
+  that it stops right after the text before the element, so a line break or image between that text
+  and the element comes out again.
 - An `id` not found in the chapter lands at the chapter start, the same fallback as R12, and raises
   a warning (R32) so the caller can log the broken link.
 

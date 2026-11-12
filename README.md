@@ -76,7 +76,8 @@ bartap_err_t read_chapter(uint32_t archive_size, uint16_t chapter)
 - **Memory mode:** if a chapter fits in RAM (PSRAM, say), inflate it with `bartap_resource_open_spine`
   and read it with `bartap_text_open_memory`. Seeks then never touch the card.
 - **TOC:** `bartap_toc_open` and `bartap_toc_next` give `BARTAP_REC_TOC_ENTRY` records with styled
-  label text. `bartap_toc_resolve` turns an entry's fragment into a bookmark.
+  label text. `bartap_toc_resolve` follows an entry's fragment: it lands the opened item on the element in one
+  pass, and gives the landing as a bookmark.
 - **Images:** an image record holds a directory offset. Pass it to `bartap_resource_open_dir`, then
   call `bartap_resource_read`. A window belongs to the object opened on it until that object is done
   with (R27), so reading an image while its chapter stays open needs a second window, or the

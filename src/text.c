@@ -1930,12 +1930,24 @@ bartap_err_t bartap_toc_resolve(bartap_text_t *text, const char *id, uint32_t id
     for (;;) {
         err = text_step(text, &rec);
         if (err == BARTAP_MORE) {
-            // just past the element's start tag
+            // just past the element's start tag, which is still the tokenizer's current token
             found = true;
             if (text->parse.block_live) {
-                // inside a block, or starting one: here in its text (R10)
+                // inside a block, or starting one: here in its text (R10). whatever the tag itself
+                // queued follows the restated block and style: nothing, an image or a line break.
+                // a block start it queued is the one the context restates
                 out->block_offset = text->parse.block_offset;
                 out->char_offset = text->parse.char_offset;
+                if (text->emit_state != EMIT_BLOCK_START) {
+                    text->emit_next = text->emit_state;
+                }
+                // an empty inline element, <i id="x"/>, closes before the context is restated, so
+                // the style record is the text's and not one the element never applied
+                bartap_parse_state_t *p = &text->parse;
+                while (text->unwind_to != UNWIND_NONE && p->depth > text->unwind_to &&
+                       p->frames[p->depth - 1u].class_kind == CLASS_INLINE) {
+                    (void)pop_frame(p, &rec);
+                }
                 err = BARTAP_OK;
                 break;
             }
@@ -1946,28 +1958,42 @@ bartap_err_t bartap_toc_resolve(bartap_text_t *text, const char *id, uint32_t id
             break;
         }
         if (found && rec.kind == BARTAP_REC_BLOCK_START) {
+            // its start record just came out, its style and what follows are still queued
             out->block_offset = rec.block.block_offset;
             out->char_offset = 0;
             break;
         }
     }
-    replay_end(text);
     text->find_id = NULL;
     text->find_id_len = 0;
     text->id_found = 0;
-    if (err == BARTAP_END && found) {
-        // nothing after it: the end of the last block
-        out->block_offset = text->parse.block_offset;
-        out->char_offset = text->parse.char_offset;
-        err = BARTAP_OK;
-    } else if (err == BARTAP_END) {
-        // a broken link, the chapter start (R13)
-        text_warn(text, BARTAP_WARN_BROKEN_LINK, 0);
-        err = BARTAP_OK;
-    }
     if (err == BARTAP_OK) {
-        // the caller seeks next, from the start like anyone else
-        err = restart(text);
+        // landed where the scan stopped, with no second pass (R13). as in bt_text_replay: a queued
+        // image had its lookup skipped, then the context is restated (R49)
+        if (text->emit_next == EMIT_IMAGE) {
+            err = resolve_image(text, &text->emit_next);
+        }
+        replay_end(text);
+        if (err == BARTAP_OK) {
+            text->emit_state = EMIT_CONTEXT;
+            text->emit_index = 0;
+        }
+    } else {
+        replay_end(text);
+        if (err == BARTAP_END && found) {
+            // nothing after it: the end of the last block, by the seek's own path. rare, so the
+            // second pass is no loss. no block at all is the item's start
+            out->block_offset = text->parse.block_offset;
+            out->char_offset = text->parse.char_offset;
+            err = bt_text_replay(text, out->block_offset, out->char_offset);
+            if (err == BARTAP_END) {
+                err = restart(text);
+            }
+        } else if (err == BARTAP_END) {
+            // a broken link, the chapter start (R13)
+            text_warn(text, BARTAP_WARN_BROKEN_LINK, 0);
+            err = restart(text);
+        }
     }
     if (err != BARTAP_OK) {
         text->status = err;
