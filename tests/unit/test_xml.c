@@ -165,6 +165,17 @@ static void test_entities(void)
            "  W entity@59 spine=7\n"
            "  W entity@63 spine=7\n"
            "END\n");
+    /* 0x80-0x9F are read as Windows-1252, as HTML does. The five it leaves undefined are C1
+     * controls, dropped (R21). */
+    EXPECT("&#150;&#x93;x&#148;&#129;",
+           "T 0-25 \"\\xE2\\x80\\x93\\xE2\\x80\\x9Cx\\xE2\\x80\\x9D\"\n"
+           "  W control@19 spine=7\n"
+           "END\n");
+    /* The whole XHTML 1 set, the 8-byte name included. Case matters. */
+    EXPECT("&alpha;&thetasym;&rarr;&diams;&Omega;&omega;&ALPHA;",
+           "T 0-51 \"\\xCE\\xB1\\xCF\\x91\\xE2\\x86\\x92\\xE2\\x99\\xA6\\xCE\\xA9\\xCF\\x89&ALPHA;\"\n"
+           "  W entity@44 spine=7\n"
+           "END\n");
     /* No ';' in reach: literal, and the byte that stopped it is untouched. */
     EXPECT("AT&T & co &zz",
            "T 0-13 \"AT&T & co &zz\"\n"
@@ -237,10 +248,11 @@ static void test_utf8_in_text(void)
 
 static void test_control_chars(void)
 {
-    /* R21: dropped whether raw, UTF-8 or a reference. Tab, LF and CR stay. */
+    /* R21: dropped whether raw, UTF-8 or a reference (to one Windows-1252 leaves undefined: the
+     * others are its characters, R30). Tab, LF and CR stay. */
     EXPECT("a\x01"
            "b\tc\nd\re\x7F"
-           "f\xC2\x85g&#x85;h&#1;i&#9;j",
+           "f\xC2\x85g&#x81;h&#1;i&#9;j",
            "T 0-31 \"ab\\x09c\\x0Ad\\x0Defghi\\x09j\"\n"
            "  W control@1 spine=7\n"
            "  W control@9 spine=7\n"
@@ -368,6 +380,22 @@ static void test_skipped(void)
            "T 0-1 \"a\"\n"
            "T 22-23 \"b\"\n"
            "T 57-58 \"c\"\n"
+           "END\n");
+    /* A comment inside the internal subset is skipped whole: its quote and its "]>" aren't the
+     * declaration's. */
+    EXPECT("a<!DOCTYPE html [ <!-- don't ]> --> <!ENTITY x '-->'> ]>b",
+           "T 0-1 \"a\"\n"
+           "T 56-57 \"b\"\n"
+           "END\n");
+    /* Nothing recognised ends at its first '>', quotes or not. */
+    EXPECT("a</ don't>b<!-'>c<![x\"]>d",
+           "T 0-1 \"a\"\n"
+           "  W malformed@1 spine=7\n"
+           "T 10-11 \"b\"\n"
+           "  W malformed@11 spine=7\n"
+           "T 16-17 \"c\"\n"
+           "  W malformed@17 spine=7\n"
+           "T 24-25 \"d\"\n"
            "END\n");
     /* Warnings from skipped markup sit between the tokens around it. */
     EXPECT("a<!-x>b<![FOO[c]>d",

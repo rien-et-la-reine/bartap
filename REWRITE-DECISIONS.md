@@ -220,6 +220,9 @@ Character offsets in bookmarks count the bytes of text records only, never other
   references, are removed from text, with a warning. Tab, LF and CR are handled by
   whitespace collapsing (R4) and line-break records in `pre`.
 - With the Windows-1252 fallback, raw bytes 0x80–0x9F decode to punctuation, never to C1 controls.
+- Character references to 0x80–0x9F are read as Windows-1252 too, as HTML reads them: `&#150;` is
+  an en dash in books converted from old Windows text. Only the five values Windows-1252 leaves
+  undefined remain C1 controls, and are dropped.
 
 ## R22 — Entry names come from the central directory
 
@@ -339,9 +342,13 @@ Character offsets in bookmarks count the bytes of text records only, never other
   an error. Invalid UTF-8 is read as Windows-1252. The R29 safety checks always apply.
 - No strict mode: validation is a different tool (EPUBCheck). A caller wanting strictness rejects
   books on warnings.
-- Named entities: XML's five plus a fixed table of common XHTML ones (`nbsp`, `mdash`, `hellip`,
-  quotes and the like). Unknown ones pass through literally, with a warning. Changing the table bumps
-  the bookmark version (R12).
+- Named entities: XML's five plus every entity of the XHTML 1 DTDs (the HTML 4 set, 253 names in
+  all, about 3 KB of flash), which EPUB 2 content may use. Unknown ones, HTML 5's additions
+  included, pass through literally, with a warning. Changing the table bumps the bookmark version
+  (R12) once a release has issued bookmarks; before 1.0 none exist, so it stays at 1.
+- A declaration is skipped to its `>`, past quoted strings, an internal subset in brackets and the
+  comments inside it. Markup that is nothing recognised (`</` with no name, `<!-`, `<![` that is not
+  CDATA) is skipped to its first `>`, as HTML skips a bogus comment: quotes mean nothing there.
 - A UTF-8 BOM is skipped. XML encoding declarations are ignored, since the Windows-1252 fallback
   covers Latin-1. A document with a UTF-16 BOM cannot be read: that item returns `ERR_UNSUPPORTED`.
 - R13 (unresolved TOC links) and R21 (dropped control characters) follow this stance.
