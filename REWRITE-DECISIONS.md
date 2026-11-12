@@ -238,8 +238,8 @@ Character offsets in bookmarks count the bytes of text records only, never other
   hashed like spine paths, their directory-record offsets recorded per R22).
 - The first two walks stop at their match. Guessing the OPF during the first walk was rejected:
   more code for little gain.
-- In hashed mode (R24) the first two are index lookups instead, and building the index is a walk
-  of its own: two full walks in all.
+- In hashed mode (R24) all three read the index instead, and only the records that match are read
+  from the card. Building the index is the one full walk of the card.
 
 ## R24 — Optional directory buffer, kept with the book
 
@@ -302,7 +302,7 @@ Character offsets in bookmarks count the bytes of text records only, never other
 
 - `bartap_open` takes the 32 KiB inflate window as its own argument, separate from its work struct,
   like every other call that inflates. The work struct holds only opening's parsing state (about
-  5 KB, still too big for a small stack, so still caller-owned).
+  3.5 KB, still too big for a small stack, so still caller-owned).
 - The window is always required, even for stored entries, so a caller's memory budget does not depend
   on a book's contents.
 - Rule: a window belongs to the object it was passed to until the caller is done with that object.

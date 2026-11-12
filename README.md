@@ -29,7 +29,7 @@ passed in, so its memory use is fixed at compile time.
 ```c
 #include "bartap.h"
 
-static uint8_t window[BARTAP_WINDOW_SIZE]; /* the inflate window, shared one call at a time */
+static uint8_t window[BARTAP_WINDOW_SIZE]; /* the inflate window, one open object at a time */
 static bartap_open_work_t work;            /* scratch for bartap_open only */
 static bartap_spine_item_t spine[256];
 static bartap_book_t book;
@@ -78,7 +78,9 @@ bartap_err_t read_chapter(uint32_t archive_size, uint16_t chapter)
 - **TOC:** `bartap_toc_open` and `bartap_toc_next` give `BARTAP_REC_TOC_ENTRY` records with styled
   label text. `bartap_toc_resolve` turns an entry's fragment into a bookmark.
 - **Images:** an image record holds a directory offset. Pass it to `bartap_resource_open_dir`, then
-  call `bartap_resource_read`.
+  call `bartap_resource_read`. A window belongs to the object opened on it until that object is done
+  with (R27), so reading an image while its chapter stays open needs a second window, or the
+  chapter in memory mode.
 - **Warnings:** every object keeps sticky warning bits (`bartap_*_warnings`), and each open call takes
   an optional callback with the byte offset of each warning (R32).
 

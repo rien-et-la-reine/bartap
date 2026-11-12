@@ -336,7 +336,7 @@ static bool is_entity_char(int c)
 
 static char fold(int c)
 {
-    return (char)(c >= 'A' && c <= 'Z' ? c + ('a' - 'A') : c);
+    return (char)bt_fold((uint8_t)c);
 }
 
 static bartap_err_t skip_space(bartap_xml_t *xml)

@@ -68,16 +68,11 @@ bartap_err_t bartap_source_memory(bartap_source_t *src, const void *data, uint32
 
 /* ---- Name hash (R43) ---- */
 
-static uint8_t name_fold(uint8_t c)
-{
-    return c >= 'A' && c <= 'Z' ? (uint8_t)(c + ('a' - 'A')) : c;
-}
-
 uint32_t bt_name_hash(uint32_t hash, const void *name, size_t len)
 {
     const uint8_t *p = name;
     for (size_t i = 0; i < len; i++) {
-        hash = (hash ^ name_fold(p[i])) * 16777619u;
+        hash = (hash ^ bt_fold(p[i])) * 16777619u;
     }
     return hash;
 }
@@ -217,23 +212,35 @@ static void window_put(bartap_stream_t *stream, uint8_t byte)
     stream->window_write++;
 }
 
-// The next compressed byte, refilling the input buffer when empty. Running out is corrupt.
+// Makes sure the input buffer holds at least one compressed byte, reading the next chunk from the
+// card when it is empty. Running out is corrupt.
+static bartap_err_t fill_input(bartap_stream_t *stream)
+{
+    if (stream->input_pos != stream->input_len) {
+        return BARTAP_OK;
+    }
+    uint32_t left = stream->entry.compressed_size - stream->compressed_read;
+    uint32_t len = left < (uint32_t)BARTAP_INPUT_BUF ? left : (uint32_t)BARTAP_INPUT_BUF;
+    if (left == 0) {
+        return BARTAP_ERR_CORRUPT;
+    }
+    bartap_err_t err = bt_read(stream->source, stream->data_offset + stream->compressed_read,
+                               stream->input, len);
+    if (err != BARTAP_OK) {
+        return err;
+    }
+    stream->compressed_read += len;
+    stream->input_pos = 0;
+    stream->input_len = len;
+    return BARTAP_OK;
+}
+
+// The next compressed byte.
 static bartap_err_t next_byte(bartap_stream_t *stream, uint8_t *byte)
 {
-    if (stream->input_pos == stream->input_len) {
-        uint32_t left = stream->entry.compressed_size - stream->compressed_read;
-        uint32_t len = left < (uint32_t)BARTAP_INPUT_BUF ? left : (uint32_t)BARTAP_INPUT_BUF;
-        if (left == 0) {
-            return BARTAP_ERR_CORRUPT;
-        }
-        bartap_err_t err = bt_read(stream->source, stream->data_offset + stream->compressed_read,
-                                   stream->input, len);
-        if (err != BARTAP_OK) {
-            return err;
-        }
-        stream->compressed_read += len;
-        stream->input_pos = 0;
-        stream->input_len = len;
+    bartap_err_t err = fill_input(stream);
+    if (err != BARTAP_OK) {
+        return err;
     }
     *byte = stream->input[stream->input_pos++];
     return BARTAP_OK;
@@ -478,13 +485,27 @@ static bartap_err_t copy_stored(bartap_stream_t *stream)
     if (len > output_left(stream)) {
         return BARTAP_ERR_CORRUPT;
     }
-    for (uint32_t i = 0; i < len; i++) {
-        uint32_t value;
-        bartap_err_t err = read_bits(stream, 8, &value);
+    // Stored bytes are whole bytes and bit_buf is empty here: a stored block's header dropped the
+    // padding and LEN and NLEN are two bytes each, and a stored entry never used it. So they are
+    // copied straight from the input buffer, in runs that stop at its end or at the window's wrap.
+    uint32_t left = len;
+    while (left != 0) {
+        bartap_err_t err = fill_input(stream);
         if (err != BARTAP_OK) {
             return err;
         }
-        window_put(stream, (uint8_t)value);
+        uint32_t pos = stream->window_write & (BARTAP_WINDOW_SIZE - 1u);
+        uint32_t run = stream->input_len - stream->input_pos;
+        if (run > left) {
+            run = left;
+        }
+        if (run > BARTAP_WINDOW_SIZE - pos) {
+            run = BARTAP_WINDOW_SIZE - pos;
+        }
+        memcpy(stream->window + pos, stream->input + stream->input_pos, run);
+        stream->input_pos += run;
+        stream->window_write += run;
+        left -= run;
     }
     inf->stored_left -= len;
     if (inf->stored_left == 0) {
@@ -961,21 +982,19 @@ static bartap_err_t read_zip64_extra(const bartap_directory_t *dir, uint32_t pos
     return BARTAP_ERR_CORRUPT;
 }
 
-// Reads the record at an offset that may be untrusted. An entry Bartap cannot read is still
+// Parses a record that may be untrusted. An entry Bartap cannot read is still
 // returned, marked by its method: one encrypted file should not stop a walk, only that file's own
 // open. Bad structure is corrupt, because the lengths leading to the next record cannot be trusted.
-static bartap_err_t parse_record(const bartap_directory_t *dir, uint32_t offset,
-                                 bartap_entry_t *entry, uint16_t *name_len, uint32_t *record_size)
+//
+// record is the record's fixed part, BT_DIR_RECORD_MIN bytes already read from offset, which is
+// inside the directory.
+static bartap_err_t parse_fixed(const bartap_directory_t *dir, uint32_t offset,
+                                const uint8_t *record, bartap_entry_t *entry, uint16_t *name_len,
+                                uint32_t *record_size)
 {
-    uint8_t record[BT_DIR_RECORD_MIN];
     bartap_entry_t parsed;
+    bartap_err_t err;
 
-    // read the fixed part of the record
-    bartap_err_t err = dir_read(dir, offset, record, BT_DIR_RECORD_MIN);
-    if (err != BARTAP_OK) {
-        // error reading record, pass error up
-        return err;
-    }
     if (bt_get_le32(record) != BT_DIR_RECORD_SIGNATURE) {
         // signature mismatch, not a record, corrupt
         return BARTAP_ERR_CORRUPT;
@@ -1026,10 +1045,27 @@ static bartap_err_t parse_record(const bartap_directory_t *dir, uint32_t offset,
     return BARTAP_OK;
 }
 
+// Reads and parses the record at an offset that may be untrusted.
+static bartap_err_t parse_record(const bartap_directory_t *dir, uint32_t offset,
+                                 bartap_entry_t *entry, uint16_t *name_len, uint32_t *record_size)
+{
+    uint8_t record[BT_DIR_RECORD_MIN];
+
+    bartap_err_t err = dir_read(dir, offset, record, BT_DIR_RECORD_MIN);
+    if (err != BARTAP_OK) {
+        // error reading record, pass error up
+        return err;
+    }
+    return parse_fixed(dir, offset, record, entry, name_len, record_size);
+}
+
 // Points a cursor at the directory's first record.
 void bt_dir_begin(const bartap_directory_t *dir, bt_dir_cursor_t *cursor)
 {
     cursor->offset = dir->offset;
+    cursor->index_pos = 0;
+    cursor->dir_offset = dir->offset;
+    cursor->loaded = false;
 }
 
 // Returns the next record with its name hash and length, or BARTAP_END after the last. Walks by the
@@ -1038,24 +1074,43 @@ void bt_dir_begin(const bartap_directory_t *dir, bt_dir_cursor_t *cursor)
 bartap_err_t bt_dir_next(const bartap_directory_t *dir, bt_dir_cursor_t *cursor,
                          bartap_entry_t *entry, uint32_t *name_hash, uint16_t *name_len)
 {
-    uint8_t chunk[BT_NAME_CHUNK];
+    uint8_t chunk[BT_DIR_RECORD_MIN + BT_NAME_CHUNK];
     uint32_t record_size;
     uint16_t names;
 
-    if (cursor->offset - dir->offset >= dir->size) {
+    uint32_t relative = cursor->offset - dir->offset;
+    if (relative >= dir->size) {
         // reached the end of the directory, done
         return BARTAP_END;
     }
-    bartap_err_t err = parse_record(dir, cursor->offset, entry, &names, &record_size);
+    // one read for the fixed part and, for most names, the whole name: each read is a trip to the
+    // card outside raw mode. never past the directory's end (R29)
+    uint32_t got = dir->size - relative;
+    if (got > sizeof chunk) {
+        got = sizeof chunk;
+    }
+    if (got < BT_DIR_RECORD_MIN) {
+        // too little left for a record
+        return BARTAP_ERR_CORRUPT;
+    }
+    bartap_err_t err = dir_read(dir, cursor->offset, chunk, got);
+    if (err == BARTAP_OK) {
+        err = parse_fixed(dir, cursor->offset, chunk, entry, &names, &record_size);
+    }
     if (err != BARTAP_OK) {
-        // bad record, pass error up. cursor hasn't moved
+        // bad record or a failed read, pass error up. cursor hasn't moved
         return err;
     }
 
-    // hash the name in chunks, feeding the previous result back in
-    uint32_t hash = BT_NAME_HASH_INIT;
-    uint32_t pos = cursor->offset + BT_DIR_RECORD_MIN;
-    uint32_t left = names;
+    // hash what came with the fixed part, then the rest of a long name in chunks, feeding the
+    // previous result back in
+    uint32_t have = got - BT_DIR_RECORD_MIN;
+    if (have > names) {
+        have = names;
+    }
+    uint32_t hash = bt_name_hash(BT_NAME_HASH_INIT, chunk + BT_DIR_RECORD_MIN, have);
+    uint32_t pos = cursor->offset + BT_DIR_RECORD_MIN + have;
+    uint32_t left = names - have;
     while (left != 0) {
         uint32_t len = left < BT_NAME_CHUNK ? left : BT_NAME_CHUNK;
         err = dir_read(dir, pos, chunk, len);
@@ -1173,7 +1228,7 @@ static bartap_err_t name_matches(const bartap_directory_t *dir, uint32_t dir_off
             return err;
         }
         for (uint32_t i = 0; i < len; i++) {
-            if (name_fold(chunk[i]) != name_fold((uint8_t)name[done + i])) {
+            if (bt_fold(chunk[i]) != bt_fold((uint8_t)name[done + i])) {
                 // names differ, which isn't an error. *matches stays false
                 return BARTAP_OK;
             }
@@ -1185,6 +1240,47 @@ static bartap_err_t name_matches(const bartap_directory_t *dir, uint32_t dir_off
     return BARTAP_OK;
 }
 
+// A walk that needs only each record's name hash, length and offset: from the index in hashed mode,
+// with no card read, else from the records themselves (R24). Directory order either way, so the
+// first match still wins (R44). An index only exists if every record parsed when it was built, so
+// both give the same sequence.
+bartap_err_t bt_dir_scan(const bartap_directory_t *dir, bt_dir_cursor_t *cursor,
+                         uint32_t *dir_offset, uint32_t *name_hash, uint16_t *name_len)
+{
+    cursor->loaded = false;
+    if (dir->index != NULL) {
+        if (cursor->index_pos >= dir->index_count) {
+            return BARTAP_END;
+        }
+        index_get(dir->index + cursor->index_pos * BARTAP_DIR_INDEX_ENTRY, name_hash, name_len,
+                  dir_offset);
+        cursor->index_pos++;
+        cursor->dir_offset = *dir_offset;
+        return BARTAP_OK;
+    }
+    bartap_err_t err = bt_dir_next(dir, cursor, &cursor->entry, name_hash, name_len);
+    if (err != BARTAP_OK) {
+        return err;
+    }
+    // the record was parsed on the way, keep it for bt_dir_scan_entry
+    cursor->loaded = true;
+    cursor->dir_offset = cursor->entry.dir_offset;
+    *dir_offset = cursor->dir_offset;
+    return BARTAP_OK;
+}
+
+// The entry of the record bt_dir_scan last returned: already parsed, or one record read in hashed
+// mode.
+bartap_err_t bt_dir_scan_entry(const bartap_directory_t *dir, const bt_dir_cursor_t *cursor,
+                               bartap_entry_t *entry)
+{
+    if (cursor->loaded) {
+        *entry = cursor->entry;
+        return BARTAP_OK;
+    }
+    return bt_dir_entry(dir, cursor->dir_offset, entry);
+}
+
 // Finds an entry by name; the first match in directory order wins, else BARTAP_END. The hash only
 // filters: the name is known here, so a collision is never returned as a match.
 bartap_err_t bt_dir_find(const bartap_directory_t *dir, const char *name, uint16_t name_len,
@@ -1192,49 +1288,26 @@ bartap_err_t bt_dir_find(const bartap_directory_t *dir, const char *name, uint16
 {
     uint32_t want = bt_name_hash(BT_NAME_HASH_INIT, name, name_len);
     bt_dir_cursor_t cursor;
-    bartap_entry_t candidate;
+    uint32_t record;
     uint32_t hash;
     uint16_t len;
     bartap_err_t err;
 
-    if (dir->index != NULL) {
-        // hashed mode: the index in directory order, so the first match still wins (R44), and only
-        // a candidate's record is read
-        for (uint32_t i = 0; i < dir->index_count; i++) {
-            uint32_t record;
-            index_get(dir->index + i * BARTAP_DIR_INDEX_ENTRY, &hash, &len, &record);
-            if (len != name_len || hash != want) {
-                continue;
-            }
-            bool matches;
-            err = name_matches(dir, record, name, name_len, &matches);
-            if (err != BARTAP_OK) {
-                return err;
-            }
-            if (matches) {
-                return bt_dir_entry(dir, record, entry);
-            }
-        }
-        return BARTAP_END;
-    }
-    // walk in directory order, so the first match wins (R44)
     bt_dir_begin(dir, &cursor);
-    while ((err = bt_dir_next(dir, &cursor, &candidate, &hash, &len)) == BARTAP_OK) {
+    while ((err = bt_dir_scan(dir, &cursor, &record, &hash, &len)) == BARTAP_OK) {
         if (len != name_len || hash != want) {
             // can't be this entry, skip the name compare
             continue;
         }
         bool matches;
         // hash and length match, compare the real name in case of a collision
-        err = name_matches(dir, candidate.dir_offset, name, name_len, &matches);
+        err = name_matches(dir, record, name, name_len, &matches);
         if (err != BARTAP_OK) {
             // error reading name, pass error up
             return err;
         }
         if (matches) {
-            // match found
-            *entry = candidate;
-            return BARTAP_OK;
+            return bt_dir_scan_entry(dir, &cursor, entry);
         }
     }
     // BARTAP_END if nothing matched, otherwise the walk's failure
@@ -1247,27 +1320,15 @@ bartap_err_t bt_dir_find_hash(const bartap_directory_t *dir, uint32_t name_hash,
                               bartap_entry_t *entry)
 {
     bt_dir_cursor_t cursor;
-    bartap_entry_t candidate;
+    uint32_t record;
     uint32_t hash;
     uint16_t len;
     bartap_err_t err;
 
-    if (dir->index != NULL) {
-        // hashed mode: one record read
-        for (uint32_t i = 0; i < dir->index_count; i++) {
-            uint32_t record;
-            index_get(dir->index + i * BARTAP_DIR_INDEX_ENTRY, &hash, &len, &record);
-            if (len == name_len && hash == name_hash) {
-                return bt_dir_entry(dir, record, entry);
-            }
-        }
-        return BARTAP_END;
-    }
     bt_dir_begin(dir, &cursor);
-    while ((err = bt_dir_next(dir, &cursor, &candidate, &hash, &len)) == BARTAP_OK) {
+    while ((err = bt_dir_scan(dir, &cursor, &record, &hash, &len)) == BARTAP_OK) {
         if (len == name_len && hash == name_hash) {
-            *entry = candidate;
-            return BARTAP_OK;
+            return bt_dir_scan_entry(dir, &cursor, entry);
         }
     }
     return err;

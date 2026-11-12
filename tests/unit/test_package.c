@@ -316,6 +316,46 @@ static void test_epub3(void)
      * single read of that record. */
     CHECK(open_as(&book, spine, SPINE_MAX, false) == BARTAP_OK);
     CHECK(reads_at_dir_start == 4);
+
+    /* Hashed: building the index is the only walk of the card. The lookups and the matching walk
+     * read the index, so the first record is read once more, by the packaging check alone. */
+    CHECK(open_with(&third, third_spine, SPINE_MAX, index_buf, book.directory.size - 1u) == BARTAP_OK);
+    CHECK(third.directory.index != NULL);
+    CHECK(reads_at_dir_start == 2);
+}
+
+/* Manifest ids are XML ids, case-sensitive: R43's folding is for file names only. */
+static void test_id_case(void)
+{
+    epub_begin(&epub);
+    epub_add_mimetype(&epub);
+    epub_add_container(&epub, "c.opf");
+    epub_add_opf(&epub, "c.opf", "uid",
+                 "<dc:identifier id=\"UID\">wrong</dc:identifier>"
+                 "<dc:identifier id=\"uid\">right</dc:identifier>"
+                 "<meta name=\"cover\" content=\"img\"/>",
+                 "<item id=\"Ch\" href=\"upper.xhtml\" media-type=\"application/xhtml+xml\"/>"
+                 "<item id=\"ch\" href=\"lower.xhtml\" media-type=\"application/xhtml+xml\"/>"
+                 "<item id=\"IMG\" href=\"upper.jpg\" media-type=\"image/jpeg\"/>"
+                 "<item id=\"img\" href=\"lower.jpg\" media-type=\"image/jpeg\"/>",
+                 "<itemref idref=\"ch\"/><itemref idref=\"Ch\"/><itemref idref=\"CH\"/>", NULL);
+    epub_add(&epub, "upper.xhtml", epub_chapter(&chapter_text, "upper"), EPUB_STORED);
+    epub_add(&epub, "lower.xhtml", epub_chapter(&chapter_text, "lower"), EPUB_STORED);
+    epub_add(&epub, "upper.jpg", "U", EPUB_STORED);
+    epub_add(&epub, "lower.jpg", "L", EPUB_STORED);
+    epub_finish(&epub);
+
+    bartap_metadata_t m;
+    CHECK(open_both(SPINE_MAX) == BARTAP_OK);
+    /* the third idref names no item at all */
+    CHECK(bartap_book_warnings(&book) == BARTAP_WARN_SPINE_ITEM_MISSING);
+    CHECK(book.spine_count == 3);
+    CHECK(spine[0].dir_offset == entry_named("lower.xhtml")->dir_offset);
+    CHECK(spine[1].dir_offset == entry_named("upper.xhtml")->dir_offset);
+    CHECK(spine[2].dir_offset == BARTAP_NO_DIR_OFFSET);
+    CHECK(book.cover_dir_offset == entry_named("lower.jpg")->dir_offset);
+    CHECK(bartap_book_metadata(&book, &m) == BARTAP_OK);
+    CHECK(m.identifier_len == 5 && memcmp(m.identifier, "right", 5) == 0);
 }
 
 /* EPUB 2: the NCX by the spine's toc attribute, the cover by <meta name="cover">. */
@@ -812,6 +852,7 @@ int main(void)
 {
     test_resolve();
     test_epub3();
+    test_id_case();
     test_epub2();
     test_metadata();
     test_spine_truncation();

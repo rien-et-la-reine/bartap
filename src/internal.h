@@ -4,6 +4,22 @@
 
 #include "bartap.h"
 
+/* ---- Shared by every layer ---- */
+
+/* ASCII letters to lower case, nothing else: R43's folding for names, and how tag and attribute
+ * names compare (R46). */
+static inline uint8_t bt_fold(uint8_t c)
+{
+    return c >= 'A' && c <= 'Z' ? (uint8_t)(c + ('a' - 'A')) : c;
+}
+
+/* Bytes in the UTF-8 character led by lead. Only for text the tokenizer has already made valid
+ * (R30). */
+static inline uint32_t bt_utf8_len(uint8_t lead)
+{
+    return lead < 0x80u ? 1u : lead < 0xE0u ? 2u : lead < 0xF0u ? 3u : 4u;
+}
+
 /* ---- zip.c ---- */
 
 /* zlib convention: start from 0, and feed the previous result back in to continue. */
@@ -35,7 +51,11 @@ bartap_err_t bt_inflate_fill(bartap_stream_t *stream);
 
 /* Central directory (R22, R24, R40, R43, R44). */
 typedef struct {
-    uint32_t offset; /* next record. The directory's size bounds a walk (R29), not its count */
+    uint32_t offset;     /* next record. The directory's size bounds a walk (R29), not its count */
+    uint32_t index_pos;  /* next index entry, for bt_dir_scan in hashed mode */
+    uint32_t dir_offset; /* the record bt_dir_scan last returned */
+    bartap_entry_t entry; /* that record's entry, when loaded */
+    bool loaded;
 } bt_dir_cursor_t;
 
 /* Finds the end record, reads ZIP64 where it fits, and chooses raw or none up front. */
@@ -46,6 +66,15 @@ void bt_dir_begin(const bartap_directory_t *dir, bt_dir_cursor_t *cursor);
 /* The next record, with its name hash and length. BARTAP_END at the end of the directory. */
 bartap_err_t bt_dir_next(const bartap_directory_t *dir, bt_dir_cursor_t *cursor,
                          bartap_entry_t *entry, uint32_t *name_hash, uint16_t *name_len);
+
+/* The next record's offset, name hash and length, for walks that want an entry only for the few
+ * records that match. Reads the index in hashed mode, so the walk costs no card reads; otherwise
+ * the same as bt_dir_next. bt_dir_scan_entry gives the entry of the record last returned. Do not
+ * mix with bt_dir_next on one cursor. */
+bartap_err_t bt_dir_scan(const bartap_directory_t *dir, bt_dir_cursor_t *cursor,
+                         uint32_t *dir_offset, uint32_t *name_hash, uint16_t *name_len);
+bartap_err_t bt_dir_scan_entry(const bartap_directory_t *dir, const bt_dir_cursor_t *cursor,
+                               bartap_entry_t *entry);
 
 /* The entry at a directory-record offset, which may be untrusted (R9, R29). */
 bartap_err_t bt_dir_entry(const bartap_directory_t *dir, uint32_t dir_offset, bartap_entry_t *entry);

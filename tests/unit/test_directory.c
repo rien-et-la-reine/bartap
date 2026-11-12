@@ -1334,8 +1334,8 @@ static void test_walk_io_failures(void)
     source.read = failing_read;
     source.user = NULL;
 
-    /* The record, its extra field's header, its value and its name are each one read. */
-    for (int ok_reads = 0; ok_reads < 4; ok_reads++) {
+    /* The record with its short name, its extra field's header and its value are each one read. */
+    for (int ok_reads = 0; ok_reads < 3; ok_reads++) {
         io_reads_left = ok_reads;
         bt_dir_begin(&dir, &cursor);
         CHECK(bt_dir_next(&dir, &cursor, &entry, &hash, &len) == BARTAP_ERR_IO);
@@ -1345,7 +1345,7 @@ static void test_walk_io_failures(void)
     }
 
     /* The name compare's read, after the walk's have passed. */
-    io_reads_left = 4;
+    io_reads_left = 3;
     CHECK(bt_dir_find(&dir, "abc", 3, &entry) == BARTAP_ERR_IO);
 
     for (int ok_reads = 0; ok_reads < 3; ok_reads++) {

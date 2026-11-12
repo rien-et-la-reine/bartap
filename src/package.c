@@ -130,6 +130,17 @@ static uint32_t hash_of(const char *p, uint32_t len)
     return bt_name_hash(BT_NAME_HASH_INIT, p, len);
 }
 
+// The hash of an XML id or idref. Not the name hash: R43's folding is for file names, and ids are
+// case-sensitive, so "Ch1" and "ch1" are two manifest items. Never stored outside an open.
+static uint32_t id_hash_of(const char *p, uint32_t len)
+{
+    uint32_t hash = BT_NAME_HASH_INIT;
+    for (uint32_t i = 0; i < len; i++) {
+        hash = (hash ^ (uint8_t)p[i]) * 16777619u;
+    }
+    return hash;
+}
+
 // Whether a token is a tag with this local name. Names are already folded (R46).
 static bool is_tag(const bartap_xml_token_t *t, bartap_xml_token_kind_t kind, const char *name,
                    uint32_t name_len)
@@ -156,12 +167,7 @@ static bool equals_folded(const char *value, uint32_t value_len, const char *wan
         return false;
     }
     for (uint32_t i = 0; i < value_len; i++) {
-        char a = value[i];
-        char b = want[i];
-        if (a >= 'A' && a <= 'Z') {
-            a = (char)(a + ('a' - 'A'));
-        }
-        if (a != b) {
+        if (bt_fold((uint8_t)value[i]) != (uint8_t)want[i]) {
             return false;
         }
     }
@@ -280,11 +286,6 @@ bartap_err_t bt_read_container(bartap_book_t *book, bartap_open_work_t *work, ui
 
 /* ---- OPF (R23, R25, R41) ---- */
 
-static uint32_t utf8_length(uint8_t lead)
-{
-    return lead < 0x80u ? 1u : lead < 0xE0u ? 2u : lead < 0xF0u ? 3u : 4u;
-}
-
 // Copies an element's text into a metadata field, whitespace collapsed and trimmed, cut at a
 // character boundary (R25). Reads on to the element's end tag; *truncated says if anything was cut.
 static bartap_err_t read_meta(bartap_open_work_t *work, char *dst, uint8_t *dst_len, bool *truncated)
@@ -330,7 +331,7 @@ static bartap_err_t read_meta(bartap_open_work_t *work, char *dst, uint8_t *dst_
             // whole characters only, so a character never straddles two chunks
             for (uint32_t i = 0; i < got;) {
                 uint8_t c = (uint8_t)buf[i];
-                uint32_t n = utf8_length(c);
+                uint32_t n = bt_utf8_len(c);
                 if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
                     // held, and only between words, so the field is trimmed
                     space = len > 0;
@@ -423,7 +424,7 @@ bartap_err_t bt_opf_first_pass(bartap_book_t *book, bartap_open_work_t *work, ui
         if (IS_START(t, "package")) {
             // names which dc:identifier is the book's (R25)
             if (ATTR(work, "unique-identifier", &value, &value_len)) {
-                work->unique_id_hash = hash_of(value, value_len);
+                work->unique_id_hash = id_hash_of(value, value_len);
                 work->found |= FOUND_UNIQUE_ID;
             }
         } else if (IS_START(t, "metadata")) {
@@ -432,7 +433,7 @@ bartap_err_t bt_opf_first_pass(bartap_book_t *book, bartap_open_work_t *work, ui
             in_spine = !t->self_closing;
             // EPUB 2's NCX, by manifest id
             if (ATTR(work, "toc", &value, &value_len)) {
-                work->toc_id_hash = hash_of(value, value_len);
+                work->toc_id_hash = id_hash_of(value, value_len);
                 work->found |= FOUND_TOC_ID;
             }
         } else if (in_metadata && !t->self_closing && IS_START(t, "title") && !have_title) {
@@ -454,7 +455,7 @@ bartap_err_t bt_opf_first_pass(bartap_book_t *book, bartap_open_work_t *work, ui
             // the one unique-identifier names, else the first non-empty one stands in (R25)
             bool is_unique = (work->found & FOUND_UNIQUE_ID) != 0 &&
                              ATTR(work, "id", &value, &value_len) &&
-                             hash_of(value, value_len) == work->unique_id_hash;
+                             id_hash_of(value, value_len) == work->unique_id_hash;
             if (is_unique) {
                 found_unique = true;
                 err = read_field(book, work, at, book->identifier, &book->identifier_len);
@@ -469,7 +470,7 @@ bartap_err_t bt_opf_first_pass(bartap_book_t *book, bartap_open_work_t *work, ui
             uint32_t name_len;
             if (ATTR(work, "name", &name, &name_len) && EQUALS(name, name_len, "cover") &&
                 ATTR(work, "content", &value, &value_len)) {
-                work->cover_id_hash = hash_of(value, value_len);
+                work->cover_id_hash = id_hash_of(value, value_len);
                 work->found |= FOUND_COVER_ID;
             }
         } else if (in_spine && IS_START(t, "itemref")) {
@@ -486,7 +487,7 @@ bartap_err_t bt_opf_first_pass(bartap_book_t *book, bartap_open_work_t *work, ui
                 book->spine_count++;
                 if (ATTR(work, "idref", &value, &value_len)) {
                     // the idref's hash waits here for the manifest, in the second pass
-                    slot->path_hash = hash_of(value, value_len);
+                    slot->path_hash = id_hash_of(value, value_len);
                     slot->flags |= BT_SPINE_PENDING;
                 }
                 // an itemref without one can never resolve, and is reported as missing
@@ -565,7 +566,7 @@ bartap_err_t bt_opf_second_pass(bartap_book_t *book, bartap_open_work_t *work)
             // only manifest items with both matter
             continue;
         }
-        uint32_t id_hash = hash_of(id, id_len);
+        uint32_t id_hash = id_hash_of(id, id_len);
         bool has_props = ATTR(work, "properties", &value, &value_len);
         bool is_nav = has_props && HAS_TOKEN(value, value_len, "nav");
         bool is_cover = (has_props && HAS_TOKEN(value, value_len, "cover-image")) ||
@@ -684,11 +685,15 @@ bartap_err_t bt_match_spine(bartap_book_t *book, bartap_open_work_t *work)
     bt_dir_begin(&book->directory, &cursor);
     for (;;) {
         bartap_entry_t entry;
+        uint32_t record;
         uint32_t name_hash;
         uint16_t name_len;
         bool duplicate = false;
+        bool loaded = false;
 
-        bartap_err_t err = bt_dir_next(&book->directory, &cursor, &entry, &name_hash, &name_len);
+        // by hash, length and offset alone: from the index in hashed mode, so only the records that
+        // match are read from the card (R24)
+        bartap_err_t err = bt_dir_scan(&book->directory, &cursor, &record, &name_hash, &name_len);
         if (err == BARTAP_END) {
             break;
         }
@@ -714,8 +719,16 @@ bartap_err_t bt_match_spine(bartap_book_t *book, bartap_open_work_t *work)
             }
             if (slot->dir_offset != BARTAP_NO_DIR_OFFSET) {
                 // a second entry with an already matched name: the first won (R44)
-                duplicate = duplicate || slot->dir_offset != entry.dir_offset;
+                duplicate = true;
                 continue;
+            }
+            if (!loaded) {
+                // the first slot this record fills. slots sharing a path share the entry
+                err = bt_dir_scan_entry(&book->directory, &cursor, &entry);
+                if (err != BARTAP_OK) {
+                    return err;
+                }
+                loaded = true;
             }
             // the entry's facts, so a chapter opens with no lookup (R41)
             slot->dir_offset = entry.dir_offset;
@@ -726,13 +739,13 @@ bartap_err_t bt_match_spine(bartap_book_t *book, bartap_open_work_t *work)
             slot->method = (uint8_t)entry.method; // normalised to fit by the directory code
         }
         duplicate |= match_path(&book->nav_dir_offset, work->nav_path_hash, work->nav_path_len,
-                                name_hash, name_len, entry.dir_offset);
+                                name_hash, name_len, record);
         duplicate |= match_path(&book->ncx_dir_offset, work->ncx_path_hash, work->ncx_path_len,
-                                name_hash, name_len, entry.dir_offset);
+                                name_hash, name_len, record);
         duplicate |= match_path(&book->cover_dir_offset, work->cover_path_hash,
-                                work->cover_path_len, name_hash, name_len, entry.dir_offset);
+                                work->cover_path_len, name_hash, name_len, record);
         if (duplicate) {
-            book_warn(book, BARTAP_WARN_DUPLICATE_NAME, BARTAP_NO_SPINE, entry.dir_offset);
+            book_warn(book, BARTAP_WARN_DUPLICATE_NAME, BARTAP_NO_SPINE, record);
         }
     }
 

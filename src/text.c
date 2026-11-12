@@ -122,12 +122,6 @@ static bool is_space(char c)
     return c == ' ' || c == '\t' || c == '\n' || c == '\r';
 }
 
-// Bytes in the UTF-8 character led by c. The tokenizer only hands on valid UTF-8 (R30).
-static uint32_t char_len(uint8_t c)
-{
-    return c < 0x80u ? 1u : c < 0xE0u ? 2u : c < 0xF0u ? 3u : 4u;
-}
-
 // hr, br and images take no frame, so an unclosed one can't swallow what follows (R46).
 static bool takes_frame(uint8_t tag)
 {
@@ -796,7 +790,7 @@ bartap_err_t bt_text_fill(bartap_text_t *text, bartap_record_t *rec)
                 return text_record(text, rec, 1);
             }
         }
-        uint32_t len = char_len((uint8_t)c);
+        uint32_t len = bt_utf8_len((uint8_t)c);
         if (c == '\t') {
             // pre keeps spacing, a tab as one space
             c = ' ';
@@ -1721,7 +1715,7 @@ bartap_err_t bartap_toc_open(bartap_toc_t *toc, const bartap_book_t *book, uint8
     bartap_err_t err = bt_dir_entry(&book->directory, dir_offset, &entry);
     if (err == BARTAP_OK) {
         // its path, for resolving hrefs. it matched a resolved href at open, so it fits
-        uint16_t len;
+        uint16_t len = 0; // stays 0 if the record can't be read
         err = bt_dir_name(&book->directory, dir_offset, toc->base_dir, BARTAP_PATH_MAX, &len);
         toc->base_dir_len = len;
     }
@@ -1775,7 +1769,7 @@ static bartap_err_t toc_fill(bartap_toc_t *toc, bartap_record_t *rec)
             toc->style_out = toc->style;
             return BARTAP_OK;
         }
-        uint32_t len = char_len((uint8_t)c);
+        uint32_t len = bt_utf8_len((uint8_t)c);
         if (toc->space_pending + len > toc->text_cap - n) {
             if (n == 0) {
                 // a 4-byte character and its space can't share a minimum buffer, the space goes alone

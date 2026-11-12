@@ -550,8 +550,16 @@ typedef struct {
 
 /* -- Book (R23, R24, R25, R27, R41) -- */
 
-/* dir_buf may be NULL; dir_buf and spine must outlive the book. A window belongs to this call until
- * it returns; work may be reused afterwards. warn_fn may be NULL.
+/* dir_buf may be NULL; source, dir_buf and spine must outlive the book, which keeps the pointers.
+ * A window belongs to this call until it returns; work may be reused afterwards. warn_fn may be
+ * NULL.
+ *
+ * Windows (R27): every other call that takes a window hands it to the object it opens (a resource,
+ * a verify, a text stream, a TOC), which holds the entry's inflate history in it. The window is
+ * that object's alone until the caller is done with the object. Opening anything else on it in
+ * between, such as an image's resource in the middle of a chapter, corrupts what the first object
+ * reads next, and only its CRC check at the entry's end notices. Reading an inline image while a
+ * chapter stays open therefore takes a second window, or memory mode for the chapter.
  *
  * Modes are chosen here from what fits, and never change any result (R24, R41):
  *   - dir_buf holds the whole central directory (raw), else an index of it at BARTAP_DIR_INDEX_ENTRY
@@ -582,7 +590,8 @@ uint32_t bartap_toc_warnings(const bartap_toc_t *toc);
 
 /* -- Resources: one buffer per call (R38) -- */
 
-/* By name, under R43's matching; first in the directory wins (R44). */
+/* By name, under R43's matching; first in the directory wins (R44). BARTAP_END if no entry has
+ * the name. */
 bartap_err_t bartap_resource_open(bartap_resource_t *res, const bartap_book_t *book,
                                   const char *path, uint32_t path_len, uint8_t *window);
 
@@ -613,7 +622,8 @@ bartap_err_t bartap_verify_step(bartap_verify_t *verify, uint32_t max_bytes);
 
 /* -- Text (R6, R11, R17, R20) -- */
 
-/* Stream mode. text_cap must be at least BARTAP_TEXT_MIN (R50); rolling and warn_fn may be NULL. */
+/* Stream mode. text_cap must be at least BARTAP_TEXT_MIN (R50); rolling and warn_fn may be NULL.
+ * window is the text object's until the caller is done with it (see bartap_open). */
 bartap_err_t bartap_text_open(bartap_text_t *text, const bartap_book_t *book, uint16_t spine_index,
                               uint8_t *window, char *text_buf, uint32_t text_cap,
                               bartap_rolling_t *rolling, bartap_warn_fn warn_fn, void *warn_user);
@@ -650,7 +660,7 @@ bartap_err_t bartap_bookmark_read(const bartap_book_t *book, const uint8_t *in,
 
 /* -- TOC (R13, R26) -- */
 
-/* BARTAP_END if the book has neither nav nor NCX. text_cap as for bartap_text_open. */
+/* BARTAP_END if the book has neither nav nor NCX. text_cap and window as for bartap_text_open. */
 bartap_err_t bartap_toc_open(bartap_toc_t *toc, const bartap_book_t *book, uint8_t *window,
                              char *text_buf, uint32_t text_cap, bartap_warn_fn warn_fn,
                              void *warn_user);
